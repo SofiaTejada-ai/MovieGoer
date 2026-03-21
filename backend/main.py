@@ -641,12 +641,16 @@ def get_recommendations(movie_id: int):
             """, rec_ids)
             fresh_data = {r["movie_id"]: r for r in cursor.fetchall()}
             
+            # Filter out deleted movies and update with fresh data
+            valid_recommendations = []
             for rec in recommendations:
                 if rec["Movie_id"] in fresh_data:
                     db_row = fresh_data[rec["Movie_id"]]
                     rec["Poster_Url"] = db_row["poster_url"] if db_row["poster_url"] else ""
                     rec["Release_Year"] = db_row["release_year"]
                     rec["Average_Rating"] = float(db_row["average_rating"]) if db_row["average_rating"] else None
+                    valid_recommendations.append(rec)
+            recommendations = valid_recommendations
 
         conn.close()
 
