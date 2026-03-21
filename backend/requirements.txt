@@ -4,3 +4,4 @@ psycopg2-binary==2.9.9
 pydantic==2.5.3
 pandas==2.1.4
 scikit-learn==1.4.0
+python-jose[cryptography]==3.3.0
