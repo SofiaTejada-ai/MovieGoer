@@ -93,18 +93,27 @@ class MovieRecommender:
 
         movies_with_features["weighted_overview"] = movies_with_features["Overview"].fillna("").apply(lambda x: x if x else "")
 
+        movies_with_features["weighted_age_rating"] = movies_with_features["Age_Rating"].apply(
+            lambda x: f"{x} " * 8 if x and x.strip() else ""
+        )
+
+        movies_with_features["weighted_runtime"] = movies_with_features["runtime_bucket"].astype(str).apply(
+            lambda x: f"{x} " * 6 if x and x != "unknown" else ""
+        )
+
         movies_with_features["light_metadata"] = (
             movies_with_features["Language"] + " " +
-            movies_with_features["Age_Rating"]
+            movies_with_features["Language"]  
         ).fillna("").astype(str).str.strip()
 
         movies_with_features["combined_features"] = (
             movies_with_features["weighted_title"] + " " +
             movies_with_features["weighted_original_title"] + " " +
             movies_with_features["weighted_genres"] + " " +
+            movies_with_features["weighted_age_rating"] + " " +
+            movies_with_features["weighted_runtime"] + " " +
             movies_with_features["weighted_overview"] + " " +
             movies_with_features["light_metadata"] + " " +
-            movies_with_features["runtime_bucket"].astype(str) + " " +
             movies_with_features["year_bucket"].astype(str) + " " +
             movies_with_features["rating_bucket"].astype(str) + " " +
             movies_with_features["popularity_bucket"].astype(str)
