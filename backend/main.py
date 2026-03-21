@@ -98,9 +98,24 @@ def load_recommender_from_db():
         for row in movie_genre_rows
     ]
 
+    # Fetch franchise data
+    cursor.execute("""
+        SELECT movie_id, media_franchise, sequel_franchise
+        FROM franchises
+    """)
+    franchise_rows = cursor.fetchall()
+    franchises_data = [
+        {
+            "Movie_id": row["movie_id"],
+            "Media_Franchise": row["media_franchise"],
+            "Sequel_Franchise": row["sequel_franchise"]
+        }
+        for row in franchise_rows
+    ]
+
     conn.close()
 
-    recommender.load_data_from_backend(movies_data, genres_data, movie_genres_data)
+    recommender.load_data_from_backend(movies_data, genres_data, movie_genres_data, franchises_data)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -170,6 +185,7 @@ class PreferenceIn(BaseModel):
     Max_Runtime: Optional[int] = None
     Preferred_Age_Rating: Optional[str] = None
     Preference_Weight: Optional[float] = None
+    Preferred_Franchise: Optional[str] = None
 
 class RegisterIn(BaseModel):
     Username: str
@@ -434,6 +450,23 @@ def get_genres():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/franchises")
+def get_franchises():
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT media_franchise
+            FROM franchises
+            WHERE media_franchise IS NOT NULL
+            ORDER BY media_franchise
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        return [row["media_franchise"] for row in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/history")
 def add_watch_history(payload: WatchHistoryIn):
     try:
@@ -556,8 +589,8 @@ def add_preference(payload: PreferenceIn):
         cursor.execute("""
             INSERT INTO user_preferences
             (user_id, preferred_genre_id, preferred_language, preferred_country,
-             min_runtime, max_runtime, preferred_age_rating, preference_weight)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+             min_runtime, max_runtime, preferred_age_rating, preference_weight, preferred_franchise)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             payload.User_id,
             payload.Preferred_Genre_id,
@@ -566,7 +599,8 @@ def add_preference(payload: PreferenceIn):
             payload.Min_Runtime,
             payload.Max_Runtime,
             payload.Preferred_Age_Rating,
-            payload.Preference_Weight
+            payload.Preference_Weight,
+            payload.Preferred_Franchise
         ))
         conn.commit()
         conn.close()

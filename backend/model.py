@@ -11,10 +11,11 @@ class MovieRecommender:
         self.feature_matrix = None
         self.movies_with_features = None
 
-    def load_data_from_backend(self, movies_data, genres_data, movie_genres_data):
+    def load_data_from_backend(self, movies_data, genres_data, movie_genres_data, franchises_data=None):
         self.movies_data = pd.DataFrame(movies_data)
         genres_df = pd.DataFrame(genres_data)
         movie_genres_df = pd.DataFrame(movie_genres_data)
+        franchises_df = pd.DataFrame(franchises_data) if franchises_data else pd.DataFrame()
 
         if self.movies_data.empty or genres_df.empty or movie_genres_df.empty:
             return False
@@ -35,7 +36,19 @@ class MovieRecommender:
 
         movies_with_features = self.movies_data.merge(movie_genre_names, on="Movie_id", how="left")
 
-        text_columns = ["Title", "Original_Title", "Overview", "Language", "Country", "Age_Rating", "Genre_Name"]
+        # Merge franchise data
+        if not franchises_df.empty:
+            franchises_df["Movie_id"] = pd.to_numeric(franchises_df["Movie_id"], errors="coerce")
+            movies_with_features = movies_with_features.merge(
+                franchises_df[["Movie_id", "Media_Franchise", "Sequel_Franchise"]], 
+                on="Movie_id", 
+                how="left"
+            )
+        else:
+            movies_with_features["Media_Franchise"] = None
+            movies_with_features["Sequel_Franchise"] = None
+
+        text_columns = ["Title", "Original_Title", "Overview", "Language", "Country", "Age_Rating", "Genre_Name", "Media_Franchise", "Sequel_Franchise"]
         for col in text_columns:
             if col not in movies_with_features.columns:
                 movies_with_features[col] = ""
@@ -101,12 +114,22 @@ class MovieRecommender:
             lambda x: f"{x} " * 6 if x and x != "unknown" else ""
         )
 
+        # Franchise weighting - HIGHEST priority for media franchise (25x), then sequel franchise (20x)
+        movies_with_features["weighted_media_franchise"] = movies_with_features["Media_Franchise"].apply(
+            lambda x: f"{x.replace(' ', '_')} " * 25 if x and str(x).strip() and str(x).lower() != 'none' else ""
+        )
+        movies_with_features["weighted_sequel_franchise"] = movies_with_features["Sequel_Franchise"].apply(
+            lambda x: f"{x.replace(' ', '_')} " * 20 if x and str(x).strip() and str(x).lower() != 'none' else ""
+        )
+
         movies_with_features["light_metadata"] = (
             movies_with_features["Language"] + " " +
             movies_with_features["Language"]  
         ).fillna("").astype(str).str.strip()
 
         movies_with_features["combined_features"] = (
+            movies_with_features["weighted_media_franchise"] + " " +
+            movies_with_features["weighted_sequel_franchise"] + " " +
             movies_with_features["weighted_title"] + " " +
             movies_with_features["weighted_original_title"] + " " +
             movies_with_features["weighted_genres"] + " " +
