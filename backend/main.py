@@ -2,72 +2,71 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import pyodbc
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import hashlib
+import os
 from contextlib import asynccontextmanager
 from model import recommender
 
-CONNECTION_STRING = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=(localdb)\\ProjectModels;"
-    "DATABASE=MovieGoerDatabase;"
-    "Trusted_Connection=yes;"
-)
+# Database connection - uses DATABASE_URL from Railway
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 def get_connection():
-    return pyodbc.connect(CONNECTION_STRING)
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return conn
 
 def load_recommender_from_db():
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT Movie_id, Title, Original_Title, Overview, Runtime, Language,
-               Country, Age_Rating, Average_Rating, Popularity_Score,
-               Poster_Url, Release_Year
-        FROM [MoviesSchema].[MoviesTable]
+        SELECT movie_id, title, original_title, overview, runtime, language,
+               country, age_rating, average_rating, popularity_score,
+               poster_url, release_year
+        FROM movies
     """)
     movie_rows = cursor.fetchall()
     movies_data = [
         {
-            "Movie_id": row.Movie_id,
-            "Title": row.Title,
-            "Original_Title": row.Original_Title,
-            "Overview": row.Overview,
-            "Runtime": row.Runtime,
-            "Language": row.Language,
-            "Country": row.Country,
-            "Age_Rating": row.Age_Rating,
-            "Average_Rating": float(row.Average_Rating) if row.Average_Rating is not None else None,
-            "Popularity_Score": float(row.Popularity_Score) if row.Popularity_Score is not None else None,
-            "Poster_Url": row.Poster_Url,
-            "Release_Year": row.Release_Year
+            "Movie_id": row["movie_id"],
+            "Title": row["title"],
+            "Original_Title": row["original_title"],
+            "Overview": row["overview"],
+            "Runtime": row["runtime"],
+            "Language": row["language"],
+            "Country": row["country"],
+            "Age_Rating": row["age_rating"],
+            "Average_Rating": float(row["average_rating"]) if row["average_rating"] is not None else None,
+            "Popularity_Score": float(row["popularity_score"]) if row["popularity_score"] is not None else None,
+            "Poster_Url": row["poster_url"],
+            "Release_Year": row["release_year"]
         }
         for row in movie_rows
     ]
 
     cursor.execute("""
-        SELECT Genre_id, Genre_Name
-        FROM [GenreSchema].[GenreTable]
+        SELECT genre_id, genre_name
+        FROM genres
     """)
     genre_rows = cursor.fetchall()
     genres_data = [
         {
-            "Genre_id": row.Genre_id,
-            "Genre_Name": row.Genre_Name
+            "Genre_id": row["genre_id"],
+            "Genre_Name": row["genre_name"]
         }
         for row in genre_rows
     ]
 
     cursor.execute("""
-        SELECT Movie_id, Genre_id
-        FROM [GenreSchema].[MovieGenresTable]
+        SELECT movie_id, genre_id
+        FROM movie_genres
     """)
     movie_genre_rows = cursor.fetchall()
     movie_genres_data = [
         {
-            "Movie_id": row.Movie_id,
-            "Genre_id": row.Genre_id
+            "Movie_id": row["movie_id"],
+            "Genre_id": row["genre_id"]
         }
         for row in movie_genre_rows
     ]
@@ -83,9 +82,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MovieGoer API", lifespan=lifespan)
 
+# CORS - add your Railway frontend URL to allowed origins
+allowed_origins = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -149,8 +154,8 @@ def register_user(payload: RegisterIn):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT User_id FROM [UserSchema].[UserTable]
-            WHERE Email = ? OR Username = ?
+            SELECT user_id FROM users
+            WHERE email = %s OR username = %s
         """, (payload.Email, payload.Username))
         existing = cursor.fetchone()
         if existing:
@@ -158,15 +163,15 @@ def register_user(payload: RegisterIn):
             raise HTTPException(status_code=409, detail="Username or email already exists")
         password_hash = hash_password(payload.Password)
         cursor.execute("""
-            INSERT INTO [UserSchema].[UserTable] (Username, Email, Passwords_hash)
-            OUTPUT INSERTED.User_id
-            VALUES (?, ?, ?)
+            INSERT INTO users (username, email, passwords_hash)
+            VALUES (%s, %s, %s)
+            RETURNING user_id
         """, (payload.Username, payload.Email, password_hash))
         new_user = cursor.fetchone()
         conn.commit()
         conn.close()
         return {
-            "User_id": new_user.User_id,
+            "User_id": new_user["user_id"],
             "Username": payload.Username,
             "Email": payload.Email
         }
@@ -182,18 +187,18 @@ def login_user(payload: LoginIn):
         cursor = conn.cursor()
         password_hash = hash_password(payload.Password)
         cursor.execute("""
-            SELECT User_id, Username, Email
-            FROM [UserSchema].[UserTable]
-            WHERE Email = ? AND Passwords_hash = ?
+            SELECT user_id, username, email
+            FROM users
+            WHERE email = %s AND passwords_hash = %s
         """, (payload.Email, password_hash))
         user = cursor.fetchone()
         conn.close()
         if user is None:
             raise HTTPException(status_code=401, detail="Invalid email or password")
         return {
-            "User_id": user.User_id,
-            "Username": user.Username,
-            "Email": user.Email
+            "User_id": user["user_id"],
+            "Username": user["username"],
+            "Email": user["email"]
         }
     except HTTPException:
         raise
@@ -206,16 +211,16 @@ def get_users():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT User_id, Username, Email
-            FROM [UserSchema].[UserTable]
+            SELECT user_id, username, email
+            FROM users
         """)
         rows = cursor.fetchall()
         conn.close()
         return [
             {
-                "User_id": row.User_id,
-                "Username": row.Username,
-                "Email": row.Email
+                "User_id": row["user_id"],
+                "Username": row["username"],
+                "Email": row["email"]
             }
             for row in rows
         ]
@@ -228,32 +233,32 @@ def get_movies():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT m.Movie_id, m.Title, m.Original_Title, m.Overview, m.Runtime, m.Language,
-                   m.Country, m.Age_Rating, m.Average_Rating, m.Popularity_Score,
-                   m.Poster_Url, m.Release_Year,
-                   (SELECT STRING_AGG(g.Genre_Name, ', ')
-                    FROM [GenreSchema].[MovieGenresTable] mg
-                    JOIN [GenreSchema].[GenreTable] g ON mg.Genre_id = g.Genre_id
-                    WHERE mg.Movie_id = m.Movie_id) as Genres
-            FROM [MoviesSchema].[MoviesTable] m
+            SELECT m.movie_id, m.title, m.original_title, m.overview, m.runtime, m.language,
+                   m.country, m.age_rating, m.average_rating, m.popularity_score,
+                   m.poster_url, m.release_year,
+                   (SELECT STRING_AGG(g.genre_name, ', ')
+                    FROM movie_genres mg
+                    JOIN genres g ON mg.genre_id = g.genre_id
+                    WHERE mg.movie_id = m.movie_id) as genres
+            FROM movies m
         """)
         rows = cursor.fetchall()
         conn.close()
         return [
             {
-                "Movie_id": row.Movie_id,
-                "Title": row.Title,
-                "Original_Title": row.Original_Title,
-                "Overview": row.Overview,
-                "Runtime": row.Runtime,
-                "Language": row.Language,
-                "Country": row.Country,
-                "Age_Rating": row.Age_Rating,
-                "Average_Rating": float(row.Average_Rating) if row.Average_Rating is not None else None,
-                "Popularity_Score": float(row.Popularity_Score) if row.Popularity_Score is not None else None,
-                "Poster_Url": row.Poster_Url,
-                "Release_Year": row.Release_Year,
-                "Genres": row.Genres if row.Genres else ""
+                "Movie_id": row["movie_id"],
+                "Title": row["title"],
+                "Original_Title": row["original_title"],
+                "Overview": row["overview"],
+                "Runtime": row["runtime"],
+                "Language": row["language"],
+                "Country": row["country"],
+                "Age_Rating": row["age_rating"],
+                "Average_Rating": float(row["average_rating"]) if row["average_rating"] is not None else None,
+                "Popularity_Score": float(row["popularity_score"]) if row["popularity_score"] is not None else None,
+                "Poster_Url": row["poster_url"],
+                "Release_Year": row["release_year"],
+                "Genres": row["genres"] if row["genres"] else ""
             }
             for row in rows
         ]
@@ -266,20 +271,20 @@ def search_movies(query: str):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT Movie_id, Title, Release_Year, Poster_Url, Average_Rating, Language
-            FROM [MoviesSchema].[MoviesTable]
-            WHERE Title LIKE ?
+            SELECT movie_id, title, release_year, poster_url, average_rating, language
+            FROM movies
+            WHERE title ILIKE %s
         """, (f"%{query}%",))
         rows = cursor.fetchall()
         conn.close()
         return [
             {
-                "Movie_id": row.Movie_id,
-                "Title": row.Title,
-                "Release_Year": row.Release_Year,
-                "Poster_Url": row.Poster_Url,
-                "Average_Rating": float(row.Average_Rating) if row.Average_Rating else None,
-                "Language": row.Language
+                "Movie_id": row["movie_id"],
+                "Title": row["title"],
+                "Release_Year": row["release_year"],
+                "Poster_Url": row["poster_url"],
+                "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                "Language": row["language"]
             }
             for row in rows
         ]
@@ -292,61 +297,60 @@ def get_movie(movie_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT m.Movie_id, m.Title, m.Original_Title, m.Overview, m.Runtime, m.Language,
-                   m.Country, m.Age_Rating, m.Average_Rating, m.Popularity_Score,
-                   m.Poster_Url, m.Release_Year,
-                   STRING_AGG(g.Genre_Name, ', ') as Genres
-            FROM [MoviesSchema].[MoviesTable] m
-            LEFT JOIN [GenreSchema].[MovieGenresTable] mg ON m.Movie_id = mg.Movie_id
-            LEFT JOIN [GenreSchema].[GenreTable] g ON mg.Genre_id = g.Genre_id
-            WHERE m.Movie_id = ?
-            GROUP BY m.Movie_id, m.Title, m.Original_Title, m.Overview, m.Runtime, m.Language,
-                     m.Country, m.Age_Rating, m.Average_Rating, m.Popularity_Score,
-                     m.Poster_Url, m.Release_Year
+            SELECT m.movie_id, m.title, m.original_title, m.overview, m.runtime, m.language,
+                   m.country, m.age_rating, m.average_rating, m.popularity_score,
+                   m.poster_url, m.release_year,
+                   STRING_AGG(g.genre_name, ', ') as genres
+            FROM movies m
+            LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
+            LEFT JOIN genres g ON mg.genre_id = g.genre_id
+            WHERE m.movie_id = %s
+            GROUP BY m.movie_id, m.title, m.original_title, m.overview, m.runtime, m.language,
+                     m.country, m.age_rating, m.average_rating, m.popularity_score,
+                     m.poster_url, m.release_year
         """, (movie_id,))
         row = cursor.fetchone()
         
         # Get streaming services for this movie
+        streaming_services = []
         try:
             cursor.execute("""
-                SELECT s.ServiceName, s.LogoUrl, ms.StreamingUrl
-                FROM [StreamingSchema].[MovieStreamingTable] ms
-                JOIN [StreamingSchema].[StreamingServicesTable] s ON ms.StreamingService_id = s.StreamingService_id
-                WHERE ms.Movie_id = ?
-                ORDER BY s.ServiceName
+                SELECT s.service_name, s.logo_url, ms.streaming_url
+                FROM movie_streaming ms
+                JOIN streaming_services s ON ms.streaming_service_id = s.streaming_service_id
+                WHERE ms.movie_id = %s
+                ORDER BY s.service_name
             """, (movie_id,))
             streaming_rows = cursor.fetchall()
+            streaming_services = [
+                {
+                    "ServiceName": r["service_name"],
+                    "LogoUrl": r["logo_url"],
+                    "StreamingUrl": r["streaming_url"]
+                }
+                for r in streaming_rows
+            ]
         except Exception as e:
             print(f"Error fetching streaming services: {e}")
-            streaming_rows = []
-        
-        streaming_services = [
-            {
-                "ServiceName": row.ServiceName,
-                "LogoUrl": row.LogoUrl,
-                "StreamingUrl": row.StreamingUrl
-            }
-            for row in streaming_rows
-        ]
         
         if row is None:
             conn.close()
             raise HTTPException(status_code=404, detail="Movie not found")
 
         result = {
-            "Movie_id": row.Movie_id,
-            "Title": row.Title,
-            "Original_Title": row.Original_Title,
-            "Overview": row.Overview,
-            "Runtime": row.Runtime,
-            "Language": row.Language,
-            "Country": row.Country,
-            "Age_Rating": row.Age_Rating,
-            "Average_Rating": float(row.Average_Rating) if row.Average_Rating is not None else None,
-            "Popularity_Score": float(row.Popularity_Score) if row.Popularity_Score is not None else None,
-            "Poster_Url": row.Poster_Url,
-            "Release_Year": row.Release_Year,
-            "Genres": row.Genres if row.Genres else "",
+            "Movie_id": row["movie_id"],
+            "Title": row["title"],
+            "Original_Title": row["original_title"],
+            "Overview": row["overview"],
+            "Runtime": row["runtime"],
+            "Language": row["language"],
+            "Country": row["country"],
+            "Age_Rating": row["age_rating"],
+            "Average_Rating": float(row["average_rating"]) if row["average_rating"] is not None else None,
+            "Popularity_Score": float(row["popularity_score"]) if row["popularity_score"] is not None else None,
+            "Poster_Url": row["poster_url"],
+            "Release_Year": row["release_year"],
+            "Genres": row["genres"] if row["genres"] else "",
             "StreamingServices": streaming_services
         }
         
@@ -363,15 +367,15 @@ def get_genres():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT Genre_id, Genre_Name
-            FROM [GenreSchema].[GenreTable]
+            SELECT genre_id, genre_name
+            FROM genres
         """)
         rows = cursor.fetchall()
         conn.close()
         return [
             {
-                "Genre_id": row.Genre_id,
-                "Genre_Name": row.Genre_Name
+                "Genre_id": row["genre_id"],
+                "Genre_Name": row["genre_name"]
             }
             for row in rows
         ]
@@ -384,8 +388,8 @@ def add_watch_history(payload: WatchHistoryIn):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO [WatchHistorySchema].[WatchHistoryTable] (User_id, Movie_id)
-            VALUES (?, ?)
+            INSERT INTO watch_history (user_id, movie_id)
+            VALUES (%s, %s)
         """, (payload.User_id, payload.Movie_id))
         conn.commit()
         conn.close()
@@ -400,22 +404,22 @@ def add_rating(payload: RatingIn):
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT Rating_id
-            FROM [RatingsSchema].[RatingsTable]
-            WHERE User_id = ? AND Movie_id = ?
+            SELECT rating_id
+            FROM ratings
+            WHERE user_id = %s AND movie_id = %s
         """, (payload.User_id, payload.Movie_id))
         existing = cursor.fetchone()
 
         if existing:
             cursor.execute("""
-                UPDATE [RatingsSchema].[RatingsTable]
-                SET Score = ?
-                WHERE User_id = ? AND Movie_id = ?
+                UPDATE ratings
+                SET score = %s
+                WHERE user_id = %s AND movie_id = %s
             """, (payload.Score, payload.User_id, payload.Movie_id))
         else:
             cursor.execute("""
-                INSERT INTO [RatingsSchema].[RatingsTable] (User_id, Movie_id, Score)
-                VALUES (?, ?, ?)
+                INSERT INTO ratings (user_id, movie_id, score)
+                VALUES (%s, %s, %s)
             """, (payload.User_id, payload.Movie_id, payload.Score))
 
         conn.commit()
@@ -430,19 +434,19 @@ def get_user_history(user_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT wh.Movie_id, m.Title, wh.Watched_Date
-            FROM [WatchHistorySchema].[WatchHistoryTable] wh
-            JOIN [MoviesSchema].[MoviesTable] m ON wh.Movie_id = m.Movie_id
-            WHERE wh.User_id = ?
-            ORDER BY wh.Watched_Date DESC
+            SELECT wh.movie_id, m.title, wh.watched_date
+            FROM watch_history wh
+            JOIN movies m ON wh.movie_id = m.movie_id
+            WHERE wh.user_id = %s
+            ORDER BY wh.watched_date DESC
         """, (user_id,))
         rows = cursor.fetchall()
         conn.close()
         return [
             {
-                "Movie_id": row.Movie_id,
-                "Title": row.Title,
-                "Watched_Date": row.Watched_Date
+                "Movie_id": row["movie_id"],
+                "Title": row["title"],
+                "Watched_Date": row["watched_date"]
             }
             for row in rows
         ]
@@ -455,18 +459,18 @@ def get_user_ratings(user_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT r.Movie_id, m.Title, r.Score
-            FROM [RatingsSchema].[RatingsTable] r
-            JOIN [MoviesSchema].[MoviesTable] m ON r.Movie_id = m.Movie_id
-            WHERE r.User_id = ?
+            SELECT r.movie_id, m.title, r.score
+            FROM ratings r
+            JOIN movies m ON r.movie_id = m.movie_id
+            WHERE r.user_id = %s
         """, (user_id,))
         rows = cursor.fetchall()
         conn.close()
         return [
             {
-                "Movie_id": row.Movie_id,
-                "Title": row.Title,
-                "Score": row.Score
+                "Movie_id": row["movie_id"],
+                "Title": row["title"],
+                "Score": row["score"]
             }
             for row in rows
         ]
@@ -479,8 +483,8 @@ def clear_user_preferences(user_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            DELETE FROM [PreferenceSchema].[UserPreferenceTable]
-            WHERE User_id = ?
+            DELETE FROM user_preferences
+            WHERE user_id = %s
         """, (user_id,))
         conn.commit()
         conn.close()
@@ -494,10 +498,10 @@ def add_preference(payload: PreferenceIn):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO [PreferenceSchema].[UserPreferenceTable]
-            (User_id, Preferred_Genre_id, Preferred_Language, Preferred_Country,
-             Min_Runtime, Max_Runtime, Preferred_Age_Rating, Preference_Weight)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user_preferences
+            (user_id, preferred_genre_id, preferred_language, preferred_country,
+             min_runtime, max_runtime, preferred_age_rating, preference_weight)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             payload.User_id,
             payload.Preferred_Genre_id,
@@ -520,12 +524,12 @@ def get_user_preferences(user_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT p.Preferred_Genre_id, g.Genre_Name, p.Preferred_Language, p.Preferred_Country,
-                   p.Min_Runtime, p.Max_Runtime, p.Preferred_Age_Rating, p.Preference_Weight
-            FROM [PreferenceSchema].[UserPreferenceTable] p
-            LEFT JOIN [GenreSchema].[GenreTable] g ON p.Preferred_Genre_id = g.Genre_id
-            WHERE p.User_id = ?
-            ORDER BY p.Preference_Weight DESC
+            SELECT p.preferred_genre_id, g.genre_name, p.preferred_language, p.preferred_country,
+                   p.min_runtime, p.max_runtime, p.preferred_age_rating, p.preference_weight
+            FROM user_preferences p
+            LEFT JOIN genres g ON p.preferred_genre_id = g.genre_id
+            WHERE p.user_id = %s
+            ORDER BY p.preference_weight DESC
         """, (user_id,))
         rows = cursor.fetchall()
         conn.close()
@@ -534,15 +538,15 @@ def get_user_preferences(user_id: int):
             return {"message": "No preferences found"}
         
         first = rows[0]
-        genres = [row.Genre_Name for row in rows if row.Genre_Name]
+        genres = [row["genre_name"] for row in rows if row["genre_name"]]
             
         return {
             "Preferred_Genres": genres,
-            "Preferred_Language": first.Preferred_Language,
-            "Preferred_Country": first.Preferred_Country,
-            "Min_Runtime": first.Min_Runtime,
-            "Max_Runtime": first.Max_Runtime,
-            "Preferred_Age_Rating": first.Preferred_Age_Rating
+            "Preferred_Language": first["preferred_language"],
+            "Preferred_Country": first["preferred_country"],
+            "Min_Runtime": first["min_runtime"],
+            "Max_Runtime": first["max_runtime"],
+            "Preferred_Age_Rating": first["preferred_age_rating"]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -553,9 +557,9 @@ def get_recommendations(movie_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT Movie_id, Title
-            FROM [MoviesSchema].[MoviesTable]
-            WHERE Movie_id = ?
+            SELECT movie_id, title
+            FROM movies
+            WHERE movie_id = %s
         """, (movie_id,))
         row = cursor.fetchone()
 
@@ -573,27 +577,27 @@ def get_recommendations(movie_id: int):
         recommendations = result["recommendations"]
         if recommendations:
             rec_ids = [rec["Movie_id"] for rec in recommendations]
-            placeholders = ",".join(["?" for _ in rec_ids])
+            placeholders = ",".join(["%s" for _ in rec_ids])
             cursor.execute(f"""
-                SELECT Movie_id, Poster_Url, Release_Year, Average_Rating
-                FROM [MoviesSchema].[MoviesTable]
-                WHERE Movie_id IN ({placeholders})
+                SELECT movie_id, poster_url, release_year, average_rating
+                FROM movies
+                WHERE movie_id IN ({placeholders})
             """, rec_ids)
-            fresh_data = {r.Movie_id: r for r in cursor.fetchall()}
+            fresh_data = {r["movie_id"]: r for r in cursor.fetchall()}
             
             for rec in recommendations:
                 if rec["Movie_id"] in fresh_data:
                     db_row = fresh_data[rec["Movie_id"]]
-                    rec["Poster_Url"] = db_row.Poster_Url if db_row.Poster_Url else ""
-                    rec["Release_Year"] = db_row.Release_Year
-                    rec["Average_Rating"] = float(db_row.Average_Rating) if db_row.Average_Rating else None
+                    rec["Poster_Url"] = db_row["poster_url"] if db_row["poster_url"] else ""
+                    rec["Release_Year"] = db_row["release_year"]
+                    rec["Average_Rating"] = float(db_row["average_rating"]) if db_row["average_rating"] else None
 
         conn.close()
 
         return {
             "selected_movie": {
-                "Movie_id": row.Movie_id,
-                "Title": row.Title
+                "Movie_id": row["movie_id"],
+                "Title": row["title"]
             },
             "recommendations": recommendations
         }
@@ -609,25 +613,24 @@ def calculate_preference_match_score(movie_row, user_preferences, preferred_genr
     - Bonus for matching age rating preference
     - Simple and fast calculation
     """
-    movie_genres = set(g.strip() for g in movie_row.Genres.split(", ")) if movie_row.Genres else set()
+    movie_genres = set(g.strip() for g in movie_row["genres"].split(", ")) if movie_row["genres"] else set()
     
     # Get user's preferred age rating
     preferred_age_rating = None
     for pref in user_preferences:
-        if pref.Preferred_Age_Rating:
-            preferred_age_rating = pref.Preferred_Age_Rating
+        if pref["preferred_age_rating"]:
+            preferred_age_rating = pref["preferred_age_rating"]
             break
     
     score = 0.3  # Base score
     
     # Check genre matches - simpler approach
     for pref in user_preferences:
-        if pref.Preferred_Genre_id and pref.Preferred_Genre_id in preferred_genre_ids:
-            # Simple genre match check without extra query
+        if pref["preferred_genre_id"] and pref["preferred_genre_id"] in preferred_genre_ids:
             score += 0.2  # 20% bonus per preferred genre
     
     # Age rating bonus
-    if preferred_age_rating and movie_row.Age_Rating == preferred_age_rating:
+    if preferred_age_rating and movie_row["age_rating"] == preferred_age_rating:
         score += 0.1  # 10% bonus for matching age rating
     
     # Cap at 95%
@@ -641,12 +644,12 @@ def get_user_recommendations(user_id: int):
         
         # Get user's watch history with ratings
         cursor.execute("""
-            SELECT wh.Movie_id, m.Title, r.Score, wh.Watched_Date
-            FROM [WatchHistorySchema].[WatchHistoryTable] wh
-            JOIN [MoviesSchema].[MoviesTable] m ON wh.Movie_id = m.Movie_id
-            LEFT JOIN [RatingsSchema].[RatingsTable] r ON wh.User_id = r.User_id AND wh.Movie_id = r.Movie_id
-            WHERE wh.User_id = ?
-            ORDER BY COALESCE(r.Score, 3) DESC, wh.Watched_Date DESC
+            SELECT wh.movie_id, m.title, r.score, wh.watched_date
+            FROM watch_history wh
+            JOIN movies m ON wh.movie_id = m.movie_id
+            LEFT JOIN ratings r ON wh.user_id = r.user_id AND wh.movie_id = r.movie_id
+            WHERE wh.user_id = %s
+            ORDER BY COALESCE(r.score, 3) DESC, wh.watched_date DESC
         """, (user_id,))
         
         watch_history = cursor.fetchall()
@@ -654,11 +657,11 @@ def get_user_recommendations(user_id: int):
         # Cold start: no watch history, use preferences
         if not watch_history:
             cursor.execute("""
-                SELECT Preferred_Genre_id, Preferred_Language, Preferred_Country,
-                       Min_Runtime, Max_Runtime, Preferred_Age_Rating, Preference_Weight
-                FROM [PreferenceSchema].[UserPreferenceTable]
-                WHERE User_id = ?
-                ORDER BY Preference_Weight DESC
+                SELECT preferred_genre_id, preferred_language, preferred_country,
+                       min_runtime, max_runtime, preferred_age_rating, preference_weight
+                FROM user_preferences
+                WHERE user_id = %s
+                ORDER BY preference_weight DESC
             """, (user_id,))
             
             all_preferences = cursor.fetchall()
@@ -666,15 +669,16 @@ def get_user_recommendations(user_id: int):
             if not all_preferences:
                 # No preferences either, return popular movies
                 cursor.execute("""
-                    SELECT TOP 10 m.Movie_id, m.Title, m.Average_Rating, m.Popularity_Score,
-                           m.Poster_Url, m.Release_Year, m.Language, m.Country, m.Age_Rating,
-                           STRING_AGG(g.Genre_Name, ', ') as Genres
-                    FROM [MoviesSchema].[MoviesTable] m
-                    LEFT JOIN [GenreSchema].[MovieGenresTable] mg ON m.Movie_id = mg.Movie_id
-                    LEFT JOIN [GenreSchema].[GenreTable] g ON mg.Genre_id = g.Genre_id
-                    GROUP BY m.Movie_id, m.Title, m.Average_Rating, m.Popularity_Score,
-                             m.Poster_Url, m.Release_Year, m.Language, m.Country, m.Age_Rating
-                    ORDER BY m.Popularity_Score DESC, m.Average_Rating DESC
+                    SELECT m.movie_id, m.title, m.average_rating, m.popularity_score,
+                           m.poster_url, m.release_year, m.language, m.country, m.age_rating,
+                           STRING_AGG(g.genre_name, ', ') as genres
+                    FROM movies m
+                    LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
+                    LEFT JOIN genres g ON mg.genre_id = g.genre_id
+                    GROUP BY m.movie_id, m.title, m.average_rating, m.popularity_score,
+                             m.poster_url, m.release_year, m.language, m.country, m.age_rating
+                    ORDER BY m.popularity_score DESC, m.average_rating DESC
+                    LIMIT 10
                 """)
                 popular_movies = cursor.fetchall()
                 conn.close()
@@ -684,15 +688,15 @@ def get_user_recommendations(user_id: int):
                     "recommendation_type": "popular",
                     "recommendations": [
                         {
-                            "Movie_id": row.Movie_id,
-                            "Title": row.Title,
-                            "Poster_Url": row.Poster_Url,
-                            "Release_Year": row.Release_Year,
-                            "Average_Rating": float(row.Average_Rating) if row.Average_Rating else None,
-                            "Genre_Name": row.Genres if row.Genres else "",
-                            "Language": row.Language if row.Language else "",
-                            "Country": row.Country if row.Country else "",
-                            "Age_Rating": row.Age_Rating if row.Age_Rating else "",
+                            "Movie_id": row["movie_id"],
+                            "Title": row["title"],
+                            "Poster_Url": row["poster_url"],
+                            "Release_Year": row["release_year"],
+                            "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                            "Genre_Name": row["genres"] if row["genres"] else "",
+                            "Language": row["language"] if row["language"] else "",
+                            "Country": row["country"] if row["country"] else "",
+                            "Age_Rating": row["age_rating"] if row["age_rating"] else "",
                             "Similarity_Score": 0.5,
                             "Source_Movie": "Popular Movies",
                             "Weight": 0.5
@@ -702,7 +706,7 @@ def get_user_recommendations(user_id: int):
                 }
             
             # Collect all preferred genre IDs
-            genre_ids = [p.Preferred_Genre_id for p in all_preferences if p.Preferred_Genre_id]
+            genre_ids = [p["preferred_genre_id"] for p in all_preferences if p["preferred_genre_id"]]
             first_pref = all_preferences[0]
             
             # Build flexible query: match ANY preferred genre, soft-filter on other prefs
@@ -710,20 +714,20 @@ def get_user_recommendations(user_id: int):
             params = []
             
             if genre_ids:
-                placeholders = ",".join(["?" for _ in genre_ids])
-                where_clauses.append(f"mg.Genre_id IN ({placeholders})")
-                params.extend(genre_ids)
+                placeholders = ",".join(["%s" for _ in genre_ids])
+                where_clauses.append(f"mg.genre_id = ANY (%s)")
+                params.append(genre_ids)
             
-            if first_pref.Preferred_Language:
-                where_clauses.append("m.Language = ?")
-                params.append(first_pref.Preferred_Language)
+            if first_pref["preferred_language"]:
+                where_clauses.append("m.language = %s")
+                params.append(first_pref["preferred_language"])
             
             # Filter R-rated content for child-friendly preferences
             child_friendly_genres = ["Animation", "Family", "Adventure", "Comedy"]
             child_genre_ids = []
-            cursor.execute("SELECT Genre_id, Genre_Name FROM [GenreSchema].[GenreTable]")
+            cursor.execute("SELECT genre_id, genre_name FROM genres")
             genre_rows = cursor.fetchall()
-            genre_map = {row.Genre_Name: row.Genre_id for row in genre_rows}
+            genre_map = {row["genre_name"]: row["genre_id"] for row in genre_rows}
             
             for genre_name in child_friendly_genres:
                 if genre_name in genre_map:
@@ -731,34 +735,35 @@ def get_user_recommendations(user_id: int):
             
             # If user prefers child-friendly genres, filter out R-rated content
             if any(gid in child_genre_ids for gid in genre_ids):
-                where_clauses.append("m.Age_Rating NOT IN ('R', 'NC-17')")
+                where_clauses.append("m.age_rating NOT IN ('R', 'NC-17')")
             
             where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
             
             cursor.execute(f"""
-                SELECT TOP 20 m.Movie_id, m.Title, m.Language, m.Country, m.Age_Rating,
-                       m.Poster_Url, m.Release_Year, m.Average_Rating, m.Popularity_Score,
-                       (SELECT STRING_AGG(g2.Genre_Name, ', ')
-                        FROM [GenreSchema].[MovieGenresTable] mg2
-                        JOIN [GenreSchema].[GenreTable] g2 ON mg2.Genre_id = g2.Genre_id
-                        WHERE mg2.Movie_id = m.Movie_id) as Genres
-                FROM [MoviesSchema].[MoviesTable] m
-                LEFT JOIN [GenreSchema].[MovieGenresTable] mg ON m.Movie_id = mg.Movie_id
+                SELECT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                       m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                       (SELECT STRING_AGG(g2.genre_name, ', ')
+                        FROM movie_genres mg2
+                        JOIN genres g2 ON mg2.genre_id = g2.genre_id
+                        WHERE mg2.movie_id = m.movie_id) as genres
+                FROM movies m
+                LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
                 WHERE {where_clause}
-                GROUP BY m.Movie_id, m.Title, m.Language, m.Country, m.Age_Rating,
-                         m.Poster_Url, m.Release_Year, m.Average_Rating, m.Popularity_Score
-                ORDER BY m.Popularity_Score DESC, m.Average_Rating DESC
+                GROUP BY m.movie_id, m.title, m.language, m.country, m.age_rating,
+                         m.poster_url, m.release_year, m.average_rating, m.popularity_score
+                ORDER BY m.popularity_score DESC, m.average_rating DESC
+                LIMIT 20
             """, params)
             
             preference_movies = cursor.fetchall()
             conn.close()
             
-            # Deduplicate by Movie_id and calculate scores
+            # Deduplicate by movie_id and calculate scores
             seen = set()
             scored_movies = []
             for row in preference_movies:
-                if row.Movie_id not in seen:
-                    seen.add(row.Movie_id)
+                if row["movie_id"] not in seen:
+                    seen.add(row["movie_id"])
                     score = calculate_preference_match_score(row, all_preferences, genre_ids)
                     scored_movies.append((row, score))
                 if len(scored_movies) >= 10:
@@ -773,15 +778,15 @@ def get_user_recommendations(user_id: int):
                 "recommendation_type": "preference_based",
                 "recommendations": [
                     {
-                        "Movie_id": row.Movie_id,
-                        "Title": row.Title,
-                        "Poster_Url": row.Poster_Url,
-                        "Release_Year": row.Release_Year,
-                        "Average_Rating": float(row.Average_Rating) if row.Average_Rating else None,
-                        "Genre_Name": row.Genres if row.Genres else "",
-                        "Language": row.Language if row.Language else "",
-                        "Country": row.Country if row.Country else "",
-                        "Age_Rating": row.Age_Rating if row.Age_Rating else "",
+                        "Movie_id": row["movie_id"],
+                        "Title": row["title"],
+                        "Poster_Url": row["poster_url"],
+                        "Release_Year": row["release_year"],
+                        "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                        "Genre_Name": row["genres"] if row["genres"] else "",
+                        "Language": row["language"] if row["language"] else "",
+                        "Country": row["country"] if row["country"] else "",
+                        "Age_Rating": row["age_rating"] if row["age_rating"] else "",
                         "Similarity_Score": round(calculate_preference_match_score(row, all_preferences, genre_ids), 2),
                         "Source_Movie": "Your Preferences",
                         "Weight": 0.7
@@ -791,7 +796,7 @@ def get_user_recommendations(user_id: int):
             }
         
         # Get user's already watched movie IDs
-        watched_movie_ids = {row.Movie_id for row in watch_history}
+        watched_movie_ids = {row["movie_id"] for row in watch_history}
         
         # Collect recommendations from user's highest-rated movies
         all_recommendations = {}
@@ -800,7 +805,7 @@ def get_user_recommendations(user_id: int):
         top_movies = watch_history[:5]
         
         for movie_row in top_movies:
-            movie_id = movie_row.Movie_id
+            movie_id = movie_row["movie_id"]
             
             # Get recommendations for this movie
             movie_recs = recommender.get_recommendations_by_id(movie_id, top_n=10)
@@ -826,12 +831,12 @@ def get_user_recommendations(user_id: int):
                             "Release_Year": rec.get("Release_Year"),
                             "Average_Rating": rec.get("Average_Rating"),
                             "Similarity_Score": rec["Similarity_Score"],
-                            "Source_Movie": movie_row.Title,
+                            "Source_Movie": movie_row["title"],
                             "Weight": 0
                         }
                     
                     # Weight by user's rating of the source movie
-                    user_rating = movie_row.Score if movie_row.Score else 3
+                    user_rating = movie_row["score"] if movie_row["score"] else 3
                     weight_multiplier = user_rating / 5.0  # Normalize to 0-1
                     all_recommendations[rec_movie_id]["Weight"] += rec["Similarity_Score"] * weight_multiplier
         
@@ -850,7 +855,7 @@ def get_user_recommendations(user_id: int):
         return {
             "user_id": user_id,
             "recommendation_type": "collaborative",
-            "based_on_movies": [row.Title for row in top_movies],
+            "based_on_movies": [row["title"] for row in top_movies],
             "recommendations": top_recommendations
         }
         
