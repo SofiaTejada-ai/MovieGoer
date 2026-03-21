@@ -1,13 +1,40 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import hashlib
 import os
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+from jose import JWTError, jwt
 from model import recommender
+
+# JWT Configuration
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "moviegoer-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+
+security = HTTPBearer()
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"user_id": int(user_id), "username": payload.get("username"), "email": payload.get("email")}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 # Database connection - uses DATABASE_URL from Railway
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -203,15 +230,32 @@ def login_user(payload: LoginIn):
         conn.close()
         if user is None:
             raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        # Create JWT token
+        access_token = create_access_token(
+            data={"sub": str(user["user_id"]), "username": user["username"], "email": user["email"]}
+        )
+        
         return {
             "User_id": user["user_id"],
             "Username": user["username"],
-            "Email": user["email"]
+            "Email": user["email"],
+            "access_token": access_token,
+            "token_type": "bearer"
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/auth/me")
+def get_current_user(current_user: dict = Depends(verify_token)):
+    """Get current user from JWT token"""
+    return {
+        "User_id": current_user["user_id"],
+        "Username": current_user["username"],
+        "Email": current_user["email"]
+    }
 
 @app.get("/users", response_model=List[UserOut])
 def get_users():
