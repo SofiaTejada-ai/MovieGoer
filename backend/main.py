@@ -77,7 +77,15 @@ def load_recommender_from_db():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    load_recommender_from_db()
+    try:
+        if DATABASE_URL:
+            load_recommender_from_db()
+            print("✅ Recommender loaded from database")
+        else:
+            print("⚠️ No DATABASE_URL set - running without database")
+    except Exception as e:
+        print(f"⚠️ Could not connect to database: {e}")
+        print("Server starting without database connection...")
     yield
 
 app = FastAPI(title="MovieGoer API", lifespan=lifespan)
