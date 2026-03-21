@@ -114,12 +114,12 @@ class MovieRecommender:
             lambda x: f"{x} " * 6 if x and x != "unknown" else ""
         )
 
-        # Franchise weighting - HIGHEST priority for media franchise (25x), then sequel franchise (20x)
+        # Franchise weighting - priority for media franchise (15x), then sequel franchise (12x)
         movies_with_features["weighted_media_franchise"] = movies_with_features["Media_Franchise"].apply(
-            lambda x: f"{x.replace(' ', '_')} " * 25 if x and str(x).strip() and str(x).lower() != 'none' else ""
+            lambda x: f"{x.replace(' ', '_')} " * 15 if x and str(x).strip() and str(x).lower() != 'none' else ""
         )
         movies_with_features["weighted_sequel_franchise"] = movies_with_features["Sequel_Franchise"].apply(
-            lambda x: f"{x.replace(' ', '_')} " * 20 if x and str(x).strip() and str(x).lower() != 'none' else ""
+            lambda x: f"{x.replace(' ', '_')} " * 12 if x and str(x).strip() and str(x).lower() != 'none' else ""
         )
 
         movies_with_features["light_metadata"] = (
@@ -155,7 +155,7 @@ class MovieRecommender:
 
         return True
 
-    def get_recommendations_by_id(self, movie_id, top_n=5, min_score=0.25):
+    def get_recommendations_by_id(self, movie_id, top_n=5, min_score=0.10):
         if self.similarity_matrix is None or self.movies_with_features is None:
             return {"error": "Model not trained. Call load_data_from_backend first."}
 
