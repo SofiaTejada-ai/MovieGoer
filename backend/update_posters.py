@@ -3,7 +3,7 @@ import psycopg2
 DATABASE_URL = "postgresql://postgres:doBjXlXqMXEtvQxvVAQqqqWioUfpCHmh@caboose.proxy.rlwy.net:33590/railway"
 
 updates = [
-    ("The Grand Budapest Hotel", "https://peterviney.files.wordpress.com/2014/03/grand-budapest-hotel.png"),
+    ("Avengers: Endgame", "https://lumiere-a.akamaihd.net/v1/images/p_avengersendgame_19751_e14a0104.jpeg"),
 ]
 
 conn = psycopg2.connect(DATABASE_URL)

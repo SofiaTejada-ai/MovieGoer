@@ -442,9 +442,10 @@ def get_user_history(user_id: int):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT wh.movie_id, m.title, m.poster_url, wh.watched_date
+            SELECT wh.movie_id, m.title, m.poster_url, wh.watched_date, r.score as user_rating
             FROM watch_history wh
             JOIN movies m ON wh.movie_id = m.movie_id
+            LEFT JOIN ratings r ON wh.movie_id = r.movie_id AND wh.user_id = r.user_id
             WHERE wh.user_id = %s
             ORDER BY wh.watched_date DESC
         """, (user_id,))
@@ -455,7 +456,8 @@ def get_user_history(user_id: int):
                 "Movie_id": row["movie_id"],
                 "Title": row["title"],
                 "Poster_Url": row["poster_url"],
-                "Watched_Date": row["watched_date"]
+                "Watched_Date": row["watched_date"],
+                "User_Rating": float(row["user_rating"]) if row["user_rating"] else None
             }
             for row in rows
         ]
