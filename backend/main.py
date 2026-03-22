@@ -761,7 +761,8 @@ def get_user_recommendations(user_id: int):
         if not watch_history:
             cursor.execute("""
                 SELECT preferred_genre_id, preferred_language, preferred_country,
-                       min_runtime, max_runtime, preferred_age_rating, preference_weight
+                       min_runtime, max_runtime, preferred_age_rating, preference_weight,
+                       preferred_franchise
                 FROM user_preferences
                 WHERE user_id = %s
                 ORDER BY preference_weight DESC
@@ -808,94 +809,126 @@ def get_user_recommendations(user_id: int):
                     ]
                 }
             
-            # Collect all preferred genre IDs
+            # Collect preferred franchises and genre IDs
+            franchise_names = list(set(p["preferred_franchise"] for p in all_preferences if p.get("preferred_franchise")))
             genre_ids = [p["preferred_genre_id"] for p in all_preferences if p["preferred_genre_id"]]
-            first_pref = all_preferences[0]
+            pref_language = next((p["preferred_language"] for p in all_preferences if p["preferred_language"]), None)
             
-            # Build flexible query: match ANY preferred genre, soft-filter on other prefs
-            where_clauses = []
-            params = []
-            
-            if genre_ids:
-                placeholders = ",".join(["%s" for _ in genre_ids])
-                where_clauses.append(f"mg.genre_id = ANY (%s)")
-                params.append(genre_ids)
-            
-            if first_pref["preferred_language"]:
-                where_clauses.append("m.language = %s")
-                params.append(first_pref["preferred_language"])
-            
-            # Filter R-rated content for child-friendly preferences
+            # Build child-friendly filter
             child_friendly_genres = ["Animation", "Family", "Adventure", "Comedy"]
-            child_genre_ids = []
             cursor.execute("SELECT genre_id, genre_name FROM genres")
             genre_rows = cursor.fetchall()
             genre_map = {row["genre_name"]: row["genre_id"] for row in genre_rows}
+            child_genre_ids = [genre_map[g] for g in child_friendly_genres if g in genre_map]
+            filter_r_rated = any(gid in child_genre_ids for gid in genre_ids)
             
-            for genre_name in child_friendly_genres:
-                if genre_name in genre_map:
-                    child_genre_ids.append(genre_map[genre_name])
+            seen_ids = set()
+            final_recommendations = []
             
-            # If user prefers child-friendly genres, filter out R-rated content
-            if any(gid in child_genre_ids for gid in genre_ids):
-                where_clauses.append("m.age_rating NOT IN ('R', 'NC-17')")
+            # === STEP 1: Franchise movies FIRST ===
+            if franchise_names:
+                franchise_placeholders = ",".join(["%s"] * len(franchise_names))
+                franchise_query = f"""
+                    SELECT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                           m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                           (SELECT STRING_AGG(g2.genre_name, ', ')
+                            FROM movie_genres mg2
+                            JOIN genres g2 ON mg2.genre_id = g2.genre_id
+                            WHERE mg2.movie_id = m.movie_id) as genres,
+                           f.media_franchise
+                    FROM movies m
+                    JOIN franchises f ON m.movie_id = f.movie_id
+                    WHERE f.media_franchise IN ({franchise_placeholders})
+                """
+                franchise_params = list(franchise_names)
+                
+                if filter_r_rated:
+                    franchise_query += " AND m.age_rating NOT IN ('R', 'NC-17')"
+                
+                franchise_query += " ORDER BY m.popularity_score DESC, m.average_rating DESC LIMIT 15"
+                
+                cursor.execute(franchise_query, franchise_params)
+                franchise_movies = cursor.fetchall()
+                
+                for row in franchise_movies:
+                    if row["movie_id"] not in seen_ids:
+                        seen_ids.add(row["movie_id"])
+                        final_recommendations.append({
+                            "Movie_id": row["movie_id"],
+                            "Title": row["title"],
+                            "Poster_Url": row["poster_url"],
+                            "Release_Year": row["release_year"],
+                            "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                            "Genre_Name": row["genres"] if row["genres"] else "",
+                            "Language": row["language"] if row["language"] else "",
+                            "Country": row["country"] if row["country"] else "",
+                            "Age_Rating": row["age_rating"] if row["age_rating"] else "",
+                            "Similarity_Score": 0.90,
+                            "Source_Movie": f"Franchise: {row['media_franchise']}",
+                            "Weight": 0.95
+                        })
             
-            where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+            # === STEP 2: Fill remaining slots with genre matches ===
+            remaining = 10 - len(final_recommendations)
+            if remaining > 0 and genre_ids:
+                genre_where = ["mg.genre_id = ANY (%s)"]
+                genre_params = [genre_ids]
+                
+                if pref_language:
+                    genre_where.append("m.language = %s")
+                    genre_params.append(pref_language)
+                
+                if filter_r_rated:
+                    genre_where.append("m.age_rating NOT IN ('R', 'NC-17')")
+                
+                # Exclude already recommended movies
+                if seen_ids:
+                    genre_where.append("m.movie_id != ALL(%s)")
+                    genre_params.append(list(seen_ids))
+                
+                genre_clause = " AND ".join(genre_where)
+                
+                cursor.execute(f"""
+                    SELECT DISTINCT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                           m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                           (SELECT STRING_AGG(g2.genre_name, ', ')
+                            FROM movie_genres mg2
+                            JOIN genres g2 ON mg2.genre_id = g2.genre_id
+                            WHERE mg2.movie_id = m.movie_id) as genres
+                    FROM movies m
+                    LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
+                    WHERE {genre_clause}
+                    ORDER BY m.popularity_score DESC, m.average_rating DESC
+                    LIMIT %s
+                """, genre_params + [remaining + 5])
+                
+                genre_movies = cursor.fetchall()
+                
+                for row in genre_movies:
+                    if row["movie_id"] not in seen_ids and len(final_recommendations) < 10:
+                        seen_ids.add(row["movie_id"])
+                        score = calculate_preference_match_score(row, all_preferences, genre_ids)
+                        final_recommendations.append({
+                            "Movie_id": row["movie_id"],
+                            "Title": row["title"],
+                            "Poster_Url": row["poster_url"],
+                            "Release_Year": row["release_year"],
+                            "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                            "Genre_Name": row["genres"] if row["genres"] else "",
+                            "Language": row["language"] if row["language"] else "",
+                            "Country": row["country"] if row["country"] else "",
+                            "Age_Rating": row["age_rating"] if row["age_rating"] else "",
+                            "Similarity_Score": round(score, 2),
+                            "Source_Movie": "Your Preferences",
+                            "Weight": 0.7
+                        })
             
-            cursor.execute(f"""
-                SELECT m.movie_id, m.title, m.language, m.country, m.age_rating,
-                       m.poster_url, m.release_year, m.average_rating, m.popularity_score,
-                       (SELECT STRING_AGG(g2.genre_name, ', ')
-                        FROM movie_genres mg2
-                        JOIN genres g2 ON mg2.genre_id = g2.genre_id
-                        WHERE mg2.movie_id = m.movie_id) as genres
-                FROM movies m
-                LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
-                WHERE {where_clause}
-                GROUP BY m.movie_id, m.title, m.language, m.country, m.age_rating,
-                         m.poster_url, m.release_year, m.average_rating, m.popularity_score
-                ORDER BY m.popularity_score DESC, m.average_rating DESC
-                LIMIT 20
-            """, params)
-            
-            preference_movies = cursor.fetchall()
             conn.close()
-            
-            # Deduplicate by movie_id and calculate scores
-            seen = set()
-            scored_movies = []
-            for row in preference_movies:
-                if row["movie_id"] not in seen:
-                    seen.add(row["movie_id"])
-                    score = calculate_preference_match_score(row, all_preferences, genre_ids)
-                    scored_movies.append((row, score))
-                if len(scored_movies) >= 10:
-                    break
-            
-            # Sort by score (highest to lowest)
-            scored_movies.sort(key=lambda x: x[1], reverse=True)
-            unique_movies = [movie for movie, score in scored_movies]
             
             return {
                 "user_id": user_id,
                 "recommendation_type": "preference_based",
-                "recommendations": [
-                    {
-                        "Movie_id": row["movie_id"],
-                        "Title": row["title"],
-                        "Poster_Url": row["poster_url"],
-                        "Release_Year": row["release_year"],
-                        "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
-                        "Genre_Name": row["genres"] if row["genres"] else "",
-                        "Language": row["language"] if row["language"] else "",
-                        "Country": row["country"] if row["country"] else "",
-                        "Age_Rating": row["age_rating"] if row["age_rating"] else "",
-                        "Similarity_Score": round(calculate_preference_match_score(row, all_preferences, genre_ids), 2),
-                        "Source_Movie": "Your Preferences",
-                        "Weight": 0.7
-                    }
-                    for row in unique_movies
-                ]
+                "recommendations": final_recommendations
             }
         
         # Get user's already watched movie IDs
