@@ -220,6 +220,12 @@ SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", "noreply@moviegoer.app")
 
 def send_password_reset_email(to_email: str, reset_link: str):
     """Send password reset email"""
+    print(f"📧 Attempting to send email to {to_email}")
+    print(f"   SMTP_SERVER: {SMTP_SERVER}")
+    print(f"   SMTP_PORT: {SMTP_PORT}")
+    print(f"   SMTP_USERNAME: {SMTP_USERNAME[:3]}...{SMTP_USERNAME[-10:] if len(SMTP_USERNAME) > 13 else SMTP_USERNAME}")
+    print(f"   SMTP_PASSWORD set: {bool(SMTP_PASSWORD)}")
+    
     if not SMTP_USERNAME or not SMTP_PASSWORD:
         print(f"⚠️ Email not configured. Reset link for {to_email}: {reset_link}")
         return True  # Return True so flow continues in dev mode
