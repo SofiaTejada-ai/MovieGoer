@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from jose import JWTError, jwt
-from model import recommender  # v5: Music movies added
+from model import recommender  # v6: 10-star rating system
 
 # JWT Configuration
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "moviegoer-secret-key-change-in-production")
