@@ -258,13 +258,14 @@ def send_password_reset_email(to_email: str, reset_link: str):
     msg.attach(MIMEText(html, "html"))
     
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
+        print(f"✅ Password reset email sent to {to_email}")
         return True
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        print(f"❌ Failed to send email: {e}")
         return False
 
 def hash_password(password: str) -> str:
