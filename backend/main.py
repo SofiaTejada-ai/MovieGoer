@@ -264,10 +264,17 @@ def send_password_reset_email(to_email: str, reset_link: str):
     msg.attach(MIMEText(html, "html"))
     
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
+        # Try SSL on port 465 first (more reliable on Railway)
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
+        else:
+            # Fallback to STARTTLS on port 587
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+                server.starttls()
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
         print(f"✅ Password reset email sent to {to_email}")
         return True
     except Exception as e:
