@@ -10,6 +10,10 @@ import os
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from jose import JWTError, jwt
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from model import recommender  # Load recommender model on startup - updated with international movies rating system
 
 # JWT Configuration
@@ -196,6 +200,73 @@ class LoginIn(BaseModel):
     Email: str
     Password: str
 
+class ForgotPasswordIn(BaseModel):
+    Email: str
+
+class ResetPasswordIn(BaseModel):
+    Token: str
+    NewPassword: str
+
+# Password reset token configuration
+password_reset_serializer = URLSafeTimedSerializer(SECRET_KEY)
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+
+# Email configuration
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", "noreply@moviegoer.app")
+
+def send_password_reset_email(to_email: str, reset_link: str):
+    """Send password reset email"""
+    if not SMTP_USERNAME or not SMTP_PASSWORD:
+        print(f"⚠️ Email not configured. Reset link for {to_email}: {reset_link}")
+        return True  # Return True so flow continues in dev mode
+    
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Reset Your MovieGoer Password"
+    msg["From"] = SMTP_FROM_EMAIL
+    msg["To"] = to_email
+    
+    html = f"""
+    <html>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0a0a0a; color: #fafafa; padding: 40px;">
+        <div style="max-width: 500px; margin: 0 auto; background-color: #171717; border-radius: 16px; padding: 40px; border: 1px solid #262626;">
+            <div style="text-align: center; margin-bottom: 30px;">
+                <div style="width: 56px; height: 56px; background-color: #7c3aed; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center;">
+                    <span style="font-size: 24px;">🎬</span>
+                </div>
+            </div>
+            <h1 style="color: #fafafa; text-align: center; margin-bottom: 20px; font-size: 24px;">Reset Your Password</h1>
+            <p style="color: #a1a1aa; text-align: center; margin-bottom: 30px;">
+                We received a request to reset your MovieGoer password. Click the button below to create a new password.
+            </p>
+            <div style="text-align: center; margin-bottom: 30px;">
+                <a href="{reset_link}" style="display: inline-block; background-color: #7c3aed; color: white; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-weight: 600;">
+                    Reset Password
+                </a>
+            </div>
+            <p style="color: #71717a; text-align: center; font-size: 14px;">
+                This link will expire in 1 hour. If you didn't request this, you can safely ignore this email.
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    msg.attach(MIMEText(html, "html"))
+    
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+        return False
+
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -272,6 +343,78 @@ def get_current_user(current_user: dict = Depends(verify_token)):
         "Username": current_user["username"],
         "Email": current_user["email"]
     }
+
+@app.post("/forgot-password")
+def forgot_password(payload: ForgotPasswordIn):
+    """Request password reset - sends email with reset link"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, email FROM users WHERE email = %s", (payload.Email,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        # Always return success to prevent email enumeration attacks
+        if user is None:
+            return {"message": "If an account with that email exists, a password reset link has been sent."}
+        
+        # Generate secure token (valid for 1 hour)
+        token = password_reset_serializer.dumps(payload.Email, salt="password-reset")
+        reset_link = f"{FRONTEND_URL}/reset-password?token={token}"
+        
+        # Send email
+        send_password_reset_email(payload.Email, reset_link)
+        
+        return {"message": "If an account with that email exists, a password reset link has been sent."}
+    except Exception as e:
+        print(f"Forgot password error: {e}")
+        return {"message": "If an account with that email exists, a password reset link has been sent."}
+
+@app.post("/reset-password")
+def reset_password(payload: ResetPasswordIn):
+    """Reset password using token from email"""
+    try:
+        # Verify token (1 hour = 3600 seconds)
+        email = password_reset_serializer.loads(payload.Token, salt="password-reset", max_age=3600)
+    except SignatureExpired:
+        raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
+    except BadSignature:
+        raise HTTPException(status_code=400, detail="Invalid reset link.")
+    
+    # Validate password
+    if len(payload.NewPassword) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
+    
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        password_hash = hash_password(payload.NewPassword)
+        cursor.execute("""
+            UPDATE users SET passwords_hash = %s WHERE email = %s
+        """, (password_hash, email))
+        
+        if cursor.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="User not found.")
+        
+        conn.commit()
+        conn.close()
+        return {"message": "Password has been reset successfully. You can now log in with your new password."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/verify-reset-token")
+def verify_reset_token(token: str):
+    """Verify if a reset token is still valid"""
+    try:
+        email = password_reset_serializer.loads(token, salt="password-reset", max_age=3600)
+        return {"valid": True, "email": email}
+    except SignatureExpired:
+        raise HTTPException(status_code=400, detail="Reset link has expired.")
+    except BadSignature:
+        raise HTTPException(status_code=400, detail="Invalid reset link.")
 
 @app.get("/users", response_model=List[UserOut])
 def get_users():
