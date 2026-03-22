@@ -615,7 +615,8 @@ def get_user_preferences(user_id: int):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT p.preferred_genre_id, g.genre_name, p.preferred_language, p.preferred_country,
-                   p.min_runtime, p.max_runtime, p.preferred_age_rating, p.preference_weight
+                   p.min_runtime, p.max_runtime, p.preferred_age_rating, p.preference_weight,
+                   p.preferred_franchise
             FROM user_preferences p
             LEFT JOIN genres g ON p.preferred_genre_id = g.genre_id
             WHERE p.user_id = %s
@@ -627,16 +628,24 @@ def get_user_preferences(user_id: int):
         if not rows:
             return {"message": "No preferences found"}
         
-        first = rows[0]
         genres = [row["genre_name"] for row in rows if row["genre_name"]]
+        franchises = [row["preferred_franchise"] for row in rows if row.get("preferred_franchise")]
+        
+        # Find first row with actual preference data (not franchise-only rows)
+        lang = next((row["preferred_language"] for row in rows if row["preferred_language"]), None)
+        ctry = next((row["preferred_country"] for row in rows if row["preferred_country"]), None)
+        min_rt = next((row["min_runtime"] for row in rows if row["min_runtime"] is not None), None)
+        max_rt = next((row["max_runtime"] for row in rows if row["max_runtime"] is not None), None)
+        age_r = next((row["preferred_age_rating"] for row in rows if row["preferred_age_rating"]), None)
             
         return {
             "Preferred_Genres": genres,
-            "Preferred_Language": first["preferred_language"],
-            "Preferred_Country": first["preferred_country"],
-            "Min_Runtime": first["min_runtime"],
-            "Max_Runtime": first["max_runtime"],
-            "Preferred_Age_Rating": first["preferred_age_rating"]
+            "Preferred_Franchises": franchises,
+            "Preferred_Language": lang,
+            "Preferred_Country": ctry,
+            "Min_Runtime": min_rt,
+            "Max_Runtime": max_rt,
+            "Preferred_Age_Rating": age_r
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
