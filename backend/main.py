@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from jose import JWTError, jwt
-from model import recommender  # v6: 10-star rating system
+from model import recommender  # Load recommender model on startup - updated with international movies rating system
 
 # JWT Configuration
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "moviegoer-secret-key-change-in-production")
