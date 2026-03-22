@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from jose import JWTError, jwt
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 import smtplib
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from model import recommender  # Load recommender model on startup - updated with international movies rating system
@@ -225,6 +226,23 @@ def send_password_reset_email(to_email: str, reset_link: str):
     print(f"   SMTP_PORT: {SMTP_PORT}")
     print(f"   SMTP_USERNAME: {SMTP_USERNAME[:3]}...{SMTP_USERNAME[-10:] if len(SMTP_USERNAME) > 13 else SMTP_USERNAME}")
     print(f"   SMTP_PASSWORD set: {bool(SMTP_PASSWORD)}")
+    
+    # DNS resolution test
+    try:
+        ip_addresses = socket.getaddrinfo(SMTP_SERVER, SMTP_PORT)
+        print(f"   DNS resolved: {ip_addresses[0][4][0]}")
+    except Exception as dns_err:
+        print(f"   ❌ DNS resolution failed: {dns_err}")
+    
+    # Socket connectivity test
+    try:
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_sock.settimeout(5)
+        test_sock.connect((SMTP_SERVER, SMTP_PORT))
+        test_sock.close()
+        print(f"   ✅ Socket connection successful")
+    except Exception as sock_err:
+        print(f"   ❌ Socket connection failed: {sock_err}")
     
     if not SMTP_USERNAME or not SMTP_PASSWORD:
         print(f"⚠️ Email not configured. Reset link for {to_email}: {reset_link}")
