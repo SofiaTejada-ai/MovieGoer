@@ -218,6 +218,7 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", "noreply@moviegoer.app")
+SMTP_FALLBACK_PORT = int(os.environ.get("SMTP_FALLBACK_PORT", "2525"))
 
 def send_password_reset_email(to_email: str, reset_link: str):
     """Send password reset email"""
@@ -281,23 +282,28 @@ def send_password_reset_email(to_email: str, reset_link: str):
     
     msg.attach(MIMEText(html, "html"))
     
-    try:
-        # Try SSL on port 465 first (more reliable on Railway)
-        if SMTP_PORT == 465:
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
-                server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
-        else:
-            # Fallback to STARTTLS on port 587
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
-                server.starttls()
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
-                server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
-        print(f"✅ Password reset email sent to {to_email}")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to send email: {e}")
-        return False
+    ports_to_try = [SMTP_PORT, SMTP_FALLBACK_PORT] if SMTP_FALLBACK_PORT != SMTP_PORT else [SMTP_PORT]
+    
+    for port in ports_to_try:
+        try:
+            print(f"   Trying SMTP on port {port}...")
+            if port == 465:
+                with smtplib.SMTP_SSL(SMTP_SERVER, port, timeout=10) as server:
+                    server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                    server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
+            else:
+                with smtplib.SMTP(SMTP_SERVER, port, timeout=10) as server:
+                    server.starttls()
+                    server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                    server.sendmail(SMTP_FROM_EMAIL, to_email, msg.as_string())
+            print(f"✅ Password reset email sent to {to_email} (port {port})")
+            return True
+        except Exception as e:
+            print(f"   ❌ Port {port} failed: {e}")
+            continue
+    
+    print(f"❌ All SMTP ports failed for {to_email}")
+    return False
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
