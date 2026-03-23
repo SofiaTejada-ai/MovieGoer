@@ -330,10 +330,18 @@ def register_user(payload: RegisterIn):
         new_user = cursor.fetchone()
         conn.commit()
         conn.close()
+        
+        # Create JWT token on registration too
+        access_token = create_access_token(
+            data={"sub": str(new_user["user_id"]), "username": payload.Username, "email": payload.Email}
+        )
+        
         return {
             "User_id": new_user["user_id"],
             "Username": payload.Username,
-            "Email": payload.Email
+            "Email": payload.Email,
+            "access_token": access_token,
+            "token_type": "bearer"
         }
     except HTTPException:
         raise
@@ -665,6 +673,7 @@ def add_watch_history(payload: WatchHistoryIn):
 
 @app.post("/ratings")
 def add_rating(payload: RatingIn):
+    print(f"📊 Rating request: User={payload.User_id}, Movie={payload.Movie_id}, Score={payload.Score}")
     try:
         conn = get_connection()
         cursor = conn.cursor()
