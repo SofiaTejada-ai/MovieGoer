@@ -1,0 +1,6 @@
+import requests
+
+r = requests.get("http://localhost:8000/users/53/history")
+print(f"Status: {r.status_code}")
+for h in r.json():
+    print(f"  {h['Title']:30} rating={h.get('User_Rating')}")
