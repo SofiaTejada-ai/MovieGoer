@@ -1124,6 +1124,44 @@ def get_user_recommendations(user_id: int):
         # Get user's already watched movie IDs
         watched_movie_ids = {row["movie_id"] for row in watch_history}
         
+        # Fetch user preferences to blend into collaborative recommendations
+        cursor.execute("""
+            SELECT p.preferred_genre_id, g.genre_name, p.preferred_language, p.preferred_country,
+                   p.min_runtime, p.max_runtime, p.preferred_age_rating, p.preference_weight,
+                   p.preferred_franchise
+            FROM user_preferences p
+            LEFT JOIN genres g ON p.preferred_genre_id = g.genre_id
+            WHERE p.user_id = %s
+            ORDER BY p.preference_weight DESC
+        """, (user_id,))
+        user_prefs = cursor.fetchall()
+        
+        # Build preference lookup for boosting
+        pref_genre_names = set()
+        pref_language = None
+        pref_country = None
+        pref_age_rating = None
+        pref_min_runtime = None
+        pref_max_runtime = None
+        pref_franchises = set()
+        for p in user_prefs:
+            if p["genre_name"]:
+                pref_genre_names.add(p["genre_name"])
+            if p["preferred_language"] and not pref_language:
+                pref_language = p["preferred_language"]
+            if p["preferred_country"] and not pref_country:
+                pref_country = p["preferred_country"]
+            if p["preferred_age_rating"] and not pref_age_rating:
+                pref_age_rating = p["preferred_age_rating"]
+            if p["min_runtime"] is not None and pref_min_runtime is None:
+                pref_min_runtime = p["min_runtime"]
+            if p["max_runtime"] is not None and pref_max_runtime is None:
+                pref_max_runtime = p["max_runtime"]
+            if p.get("preferred_franchise"):
+                pref_franchises.add(p["preferred_franchise"])
+        
+        has_prefs = bool(user_prefs)
+        
         # Collect recommendations from user's highest-rated movies
         all_recommendations = {}
         
@@ -1133,8 +1171,8 @@ def get_user_recommendations(user_id: int):
         for movie_row in top_movies:
             movie_id = movie_row["movie_id"]
             
-            # Get recommendations for this movie
-            movie_recs = recommender.get_recommendations_by_id(movie_id, top_n=10)
+            # Get more candidates so preference filtering has room to work
+            movie_recs = recommender.get_recommendations_by_id(movie_id, top_n=20 if has_prefs else 10)
             
             if "recommendations" in movie_recs:
                 for rec in movie_recs["recommendations"]:
@@ -1166,6 +1204,41 @@ def get_user_recommendations(user_id: int):
                     weight_multiplier = user_rating / 5.0  # Normalize to 0-1
                     all_recommendations[rec_movie_id]["Weight"] += rec["Similarity_Score"] * weight_multiplier
         
+        # Apply preference boosts so changing preferences changes the results
+        if has_prefs:
+            for rec in all_recommendations.values():
+                pref_boost = 0.0
+                
+                # Genre boost — biggest factor
+                rec_genres = set(g.strip() for g in rec["Genre_Name"].split(",")) if rec["Genre_Name"] else set()
+                matching_genres = rec_genres & pref_genre_names
+                if matching_genres:
+                    pref_boost += 0.35 * (len(matching_genres) / max(len(pref_genre_names), 1))
+                
+                # Language boost
+                if pref_language and rec["Language"] and rec["Language"].lower() == pref_language.lower():
+                    pref_boost += 0.15
+                
+                # Country boost
+                if pref_country and rec["Country"] and rec["Country"].lower() == pref_country.lower():
+                    pref_boost += 0.10
+                
+                # Age rating boost
+                if pref_age_rating and rec["Age_Rating"] and rec["Age_Rating"] == pref_age_rating:
+                    pref_boost += 0.10
+                
+                # Franchise boost — check via source or title heuristic
+                if pref_franchises:
+                    source = rec.get("Source_Movie", "")
+                    title = rec.get("Title", "")
+                    for fran in pref_franchises:
+                        if fran.lower() in title.lower() or fran.lower() in source.lower():
+                            pref_boost += 0.30
+                            break
+                
+                # Apply boost: multiply base weight by (1 + boost) so preferences re-rank results
+                rec["Weight"] *= (1.0 + pref_boost)
+        
         # Sort by combined weight
         sorted_recommendations = sorted(
             all_recommendations.values(),
@@ -1180,7 +1253,7 @@ def get_user_recommendations(user_id: int):
         
         return {
             "user_id": user_id,
-            "recommendation_type": "collaborative",
+            "recommendation_type": "preference_collaborative" if has_prefs else "collaborative",
             "based_on_movies": [row["title"] for row in top_movies],
             "recommendations": top_recommendations
         }
