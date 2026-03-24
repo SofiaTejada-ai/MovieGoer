@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS movies (
     language VARCHAR(50),
     country VARCHAR(50),
     age_rating VARCHAR(20),
-    average_rating DECIMAL(3,2) CHECK (average_rating BETWEEN 0 AND 5),
+    average_rating DECIMAL(4,2) CHECK (average_rating BETWEEN 0 AND 10),
     popularity_score DECIMAL(10,2) CHECK (popularity_score >= 0),
     poster_url VARCHAR(500),
     release_year INTEGER NOT NULL CHECK (release_year BETWEEN 1888 AND 2100)
@@ -40,12 +40,20 @@ CREATE TABLE IF NOT EXISTS movie_genres (
     PRIMARY KEY (movie_id, genre_id)
 );
 
+-- Franchises table (equivalent to FranchiseSchema.FranchiseTable)
+CREATE TABLE IF NOT EXISTS franchises (
+    franchise_id SERIAL PRIMARY KEY,
+    movie_id INTEGER NOT NULL REFERENCES movies(movie_id) ON DELETE CASCADE,
+    media_franchise VARCHAR(50),
+    sequel_franchise VARCHAR(50)
+);
+
 -- Ratings table (equivalent to RatingsSchema.RatingsTable)
 CREATE TABLE IF NOT EXISTS ratings (
     rating_id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     movie_id INTEGER NOT NULL REFERENCES movies(movie_id) ON DELETE CASCADE,
-    score INTEGER NOT NULL CHECK (score BETWEEN 1 AND 5),
+    score INTEGER NOT NULL CHECK (score BETWEEN 1 AND 10),
     rated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, movie_id)
 );

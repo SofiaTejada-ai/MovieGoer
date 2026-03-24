@@ -76,7 +76,7 @@ class MovieRecommender:
 
         movies_with_features["rating_bucket"] = pd.cut(
             movies_with_features["Average_Rating"],
-            bins=[0, 2.5, 3.5, 4.2, 5],
+            bins=[0, 5.0, 7.0, 8.4, 10],
             labels=["low", "mid", "high", "elite"],
             include_lowest=True
         ).astype("object").fillna("unknown")
