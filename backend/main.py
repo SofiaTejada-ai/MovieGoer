@@ -1204,75 +1204,89 @@ def get_user_recommendations(user_id: int):
                     weight_multiplier = user_rating / 5.0  # Normalize to 0-1
                     all_recommendations[rec_movie_id]["Weight"] += rec["Similarity_Score"] * weight_multiplier
         
-        # Apply preference boosts using DB lookups (not string parsing) so changing preferences changes results
-        if has_prefs and all_recommendations:
-            rec_movie_ids = list(all_recommendations.keys())
+        if has_prefs:
+            # === SLOT RESERVATION: Split top 10 between ML and preference-matched movies ===
+            # This guarantees changing preferences visibly changes the recommendations
             
-            # Lookup actual genre IDs for each recommended movie from DB
-            placeholders = ",".join(["%s"] * len(rec_movie_ids))
-            cursor.execute(f"""
-                SELECT movie_id, genre_id
-                FROM movie_genres
-                WHERE movie_id IN ({placeholders})
-            """, rec_movie_ids)
-            movie_genre_rows = cursor.fetchall()
+            # SLOTS 1-5: Top ML collaborative recommendations (from watch history)
+            ml_sorted = sorted(all_recommendations.values(), key=lambda x: x["Weight"], reverse=True)
+            ml_top = ml_sorted[:5]
             
-            # Build movie_id -> set of genre_ids mapping
-            rec_genre_map = {}
-            for row in movie_genre_rows:
-                rec_genre_map.setdefault(row["movie_id"], set()).add(row["genre_id"])
+            # SLOTS 6-10: Fresh movies matching user's current preferences from DB
+            all_used_ids = watched_movie_ids | {r["Movie_id"] for r in ml_top}
+            exclude_ids = list(all_used_ids)
+            exclude_ph = ",".join(["%s"] * len(exclude_ids))
             
-            # Lookup franchise associations for recommended movies
-            rec_franchise_map = {}
+            pref_movies = []
+            
+            # First try franchise matches
             if pref_franchises:
+                fran_ph = ",".join(["%s"] * len(pref_franchises))
+                fran_list = list(pref_franchises)
                 cursor.execute(f"""
-                    SELECT movie_id, media_franchise
-                    FROM franchises
-                    WHERE movie_id IN ({placeholders})
-                """, rec_movie_ids)
-                for row in cursor.fetchall():
-                    if row["media_franchise"]:
-                        rec_franchise_map.setdefault(row["movie_id"], set()).add(row["media_franchise"])
+                    SELECT DISTINCT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                           m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                           (SELECT STRING_AGG(g2.genre_name, ', ')
+                            FROM movie_genres mg2
+                            JOIN genres g2 ON mg2.genre_id = g2.genre_id
+                            WHERE mg2.movie_id = m.movie_id) as genres
+                    FROM movies m
+                    JOIN franchises f ON m.movie_id = f.movie_id
+                    WHERE f.media_franchise IN ({fran_ph})
+                      AND m.movie_id NOT IN ({exclude_ph})
+                    ORDER BY m.popularity_score DESC, m.average_rating DESC
+                    LIMIT 5
+                """, fran_list + exclude_ids)
+                pref_movies.extend(cursor.fetchall())
             
-            for mid, rec in all_recommendations.items():
-                pref_boost = 0.0
-                
-                # Genre boost — biggest factor, uses actual genre IDs from DB
-                movie_genres = rec_genre_map.get(mid, set())
-                matching_genres = movie_genres & pref_genre_ids
-                if matching_genres:
-                    pref_boost += 0.50 * (len(matching_genres) / max(len(pref_genre_ids), 1))
-                
-                # Language boost
-                if pref_language and rec["Language"] and rec["Language"].lower() == pref_language.lower():
-                    pref_boost += 0.20
-                
-                # Country boost
-                if pref_country and rec["Country"] and rec["Country"].lower() == pref_country.lower():
-                    pref_boost += 0.15
-                
-                # Age rating boost
-                if pref_age_rating and rec["Age_Rating"] and rec["Age_Rating"] == pref_age_rating:
-                    pref_boost += 0.15
-                
-                # Franchise boost — uses actual franchise data from DB
-                if pref_franchises:
-                    movie_franchises = rec_franchise_map.get(mid, set())
-                    if movie_franchises & pref_franchises:
-                        pref_boost += 0.40
-                
-                # Apply boost: additive component ensures preferences visibly re-rank results
-                rec["Weight"] = rec["Weight"] * (1.0 + pref_boost) + pref_boost * 0.5
-        
-        # Sort by combined weight
-        sorted_recommendations = sorted(
-            all_recommendations.values(),
-            key=lambda x: x["Weight"],
-            reverse=True
-        )
-        
-        # Return top recommendations
-        top_recommendations = sorted_recommendations[:10]
+            # Fill remaining preference slots with genre matches
+            remaining = 5 - len(pref_movies)
+            if remaining > 0 and pref_genre_ids:
+                already_ids = list(all_used_ids | {r["movie_id"] for r in pref_movies})
+                already_ph = ",".join(["%s"] * len(already_ids))
+                cursor.execute(f"""
+                    SELECT DISTINCT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                           m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                           (SELECT STRING_AGG(g2.genre_name, ', ')
+                            FROM movie_genres mg2
+                            JOIN genres g2 ON mg2.genre_id = g2.genre_id
+                            WHERE mg2.movie_id = m.movie_id) as genres
+                    FROM movies m
+                    JOIN movie_genres mg ON m.movie_id = mg.movie_id
+                    WHERE mg.genre_id = ANY(%s)
+                      AND m.movie_id NOT IN ({already_ph})
+                    ORDER BY m.popularity_score DESC, m.average_rating DESC
+                    LIMIT %s
+                """, [list(pref_genre_ids)] + already_ids + [remaining])
+                pref_movies.extend(cursor.fetchall())
+            
+            # Build preference slot recommendations
+            pref_recs = []
+            for row in pref_movies[:5]:
+                pref_recs.append({
+                    "Movie_id": row["movie_id"],
+                    "Title": row["title"],
+                    "Genre_Name": row["genres"] if row["genres"] else "",
+                    "Language": row["language"] if row["language"] else "",
+                    "Country": row["country"] if row["country"] else "",
+                    "Age_Rating": row["age_rating"] if row["age_rating"] else "",
+                    "Poster_Url": row["poster_url"] if row["poster_url"] else "",
+                    "Release_Year": row["release_year"],
+                    "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                    "Similarity_Score": 0.80,
+                    "Source_Movie": "Your Preferences",
+                    "Weight": ml_top[-1]["Weight"] if ml_top else 1.0
+                })
+            
+            top_recommendations = sorted(ml_top + pref_recs, key=lambda x: x["Similarity_Score"], reverse=True)
+        else:
+            # No preferences — pure collaborative filtering
+            sorted_recommendations = sorted(
+                all_recommendations.values(),
+                key=lambda x: x["Weight"],
+                reverse=True
+            )
+            top_recommendations = sorted_recommendations[:10]
         
         conn.close()
         
