@@ -1137,7 +1137,7 @@ def get_user_recommendations(user_id: int):
         user_prefs = cursor.fetchall()
         
         # Build preference lookup for boosting
-        pref_genre_names = set()
+        pref_genre_ids = set()
         pref_language = None
         pref_country = None
         pref_age_rating = None
@@ -1145,8 +1145,8 @@ def get_user_recommendations(user_id: int):
         pref_max_runtime = None
         pref_franchises = set()
         for p in user_prefs:
-            if p["genre_name"]:
-                pref_genre_names.add(p["genre_name"])
+            if p["preferred_genre_id"]:
+                pref_genre_ids.add(p["preferred_genre_id"])
             if p["preferred_language"] and not pref_language:
                 pref_language = p["preferred_language"]
             if p["preferred_country"] and not pref_country:
@@ -1204,40 +1204,65 @@ def get_user_recommendations(user_id: int):
                     weight_multiplier = user_rating / 5.0  # Normalize to 0-1
                     all_recommendations[rec_movie_id]["Weight"] += rec["Similarity_Score"] * weight_multiplier
         
-        # Apply preference boosts so changing preferences changes the results
-        if has_prefs:
-            for rec in all_recommendations.values():
+        # Apply preference boosts using DB lookups (not string parsing) so changing preferences changes results
+        if has_prefs and all_recommendations:
+            rec_movie_ids = list(all_recommendations.keys())
+            
+            # Lookup actual genre IDs for each recommended movie from DB
+            placeholders = ",".join(["%s"] * len(rec_movie_ids))
+            cursor.execute(f"""
+                SELECT movie_id, genre_id
+                FROM movie_genres
+                WHERE movie_id IN ({placeholders})
+            """, rec_movie_ids)
+            movie_genre_rows = cursor.fetchall()
+            
+            # Build movie_id -> set of genre_ids mapping
+            rec_genre_map = {}
+            for row in movie_genre_rows:
+                rec_genre_map.setdefault(row["movie_id"], set()).add(row["genre_id"])
+            
+            # Lookup franchise associations for recommended movies
+            rec_franchise_map = {}
+            if pref_franchises:
+                cursor.execute(f"""
+                    SELECT movie_id, media_franchise
+                    FROM franchises
+                    WHERE movie_id IN ({placeholders})
+                """, rec_movie_ids)
+                for row in cursor.fetchall():
+                    if row["media_franchise"]:
+                        rec_franchise_map.setdefault(row["movie_id"], set()).add(row["media_franchise"])
+            
+            for mid, rec in all_recommendations.items():
                 pref_boost = 0.0
                 
-                # Genre boost — biggest factor
-                rec_genres = set(g.strip() for g in rec["Genre_Name"].split(",")) if rec["Genre_Name"] else set()
-                matching_genres = rec_genres & pref_genre_names
+                # Genre boost — biggest factor, uses actual genre IDs from DB
+                movie_genres = rec_genre_map.get(mid, set())
+                matching_genres = movie_genres & pref_genre_ids
                 if matching_genres:
-                    pref_boost += 0.35 * (len(matching_genres) / max(len(pref_genre_names), 1))
+                    pref_boost += 0.50 * (len(matching_genres) / max(len(pref_genre_ids), 1))
                 
                 # Language boost
                 if pref_language and rec["Language"] and rec["Language"].lower() == pref_language.lower():
-                    pref_boost += 0.15
+                    pref_boost += 0.20
                 
                 # Country boost
                 if pref_country and rec["Country"] and rec["Country"].lower() == pref_country.lower():
-                    pref_boost += 0.10
+                    pref_boost += 0.15
                 
                 # Age rating boost
                 if pref_age_rating and rec["Age_Rating"] and rec["Age_Rating"] == pref_age_rating:
-                    pref_boost += 0.10
+                    pref_boost += 0.15
                 
-                # Franchise boost — check via source or title heuristic
+                # Franchise boost — uses actual franchise data from DB
                 if pref_franchises:
-                    source = rec.get("Source_Movie", "")
-                    title = rec.get("Title", "")
-                    for fran in pref_franchises:
-                        if fran.lower() in title.lower() or fran.lower() in source.lower():
-                            pref_boost += 0.30
-                            break
+                    movie_franchises = rec_franchise_map.get(mid, set())
+                    if movie_franchises & pref_franchises:
+                        pref_boost += 0.40
                 
-                # Apply boost: multiply base weight by (1 + boost) so preferences re-rank results
-                rec["Weight"] *= (1.0 + pref_boost)
+                # Apply boost: additive component ensures preferences visibly re-rank results
+                rec["Weight"] = rec["Weight"] * (1.0 + pref_boost) + pref_boost * 0.5
         
         # Sort by combined weight
         sorted_recommendations = sorted(
