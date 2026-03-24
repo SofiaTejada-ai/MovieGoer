@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file (MOVIE_GOER_API_KEY, etc.)
+
 os.environ["DATABASE_URL"] = "postgresql://postgres:doBjXlXqMXEtvQxvVAQqqqWioUfpCHmh@caboose.proxy.rlwy.net:33590/railway"
 os.environ["ALLOWED_ORIGINS"] = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
 
