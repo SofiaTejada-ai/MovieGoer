@@ -16,6 +16,7 @@ import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from model import recommender  # Load recommender model on startup - updated with international movies rating system
+from llm_predictor import predict_movie_preference, chat_about_movie, clear_chat_session
 
 # JWT Configuration
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "moviegoer-secret-key-change-in-production")
@@ -200,6 +201,11 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     Email: str
     Password: str
+
+class ChatMessageIn(BaseModel):
+    user_id: int
+    movie_id: int
+    message: str
 
 class ForgotPasswordIn(BaseModel):
     Email: str
@@ -1301,3 +1307,39 @@ def get_user_recommendations(user_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
+# AI PREDICTION ENDPOINTS (Gemini)
+# ============================================
+
+@app.get("/ai/predict/{user_id}/{movie_id}")
+def ai_predict_movie(user_id: int, movie_id: int):
+    """Predict whether a user would like a specific movie using Gemini AI."""
+    try:
+        result = predict_movie_preference(user_id, movie_id)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ai/chat")
+def ai_chat_movie(payload: ChatMessageIn):
+    """Chat with Gemini AI about a specific movie, personalized to the user."""
+    try:
+        result = chat_about_movie(payload.user_id, payload.movie_id, payload.message)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/ai/chat/{user_id}/{movie_id}")
+def ai_clear_chat(user_id: int, movie_id: int):
+    """Clear a chat session when the user leaves the movie page."""
+    clear_chat_session(user_id, movie_id)
+    return {"message": "Chat session cleared"}

@@ -1,0 +1,16 @@
+# Environment variables (API keys)
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
