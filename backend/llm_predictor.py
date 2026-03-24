@@ -239,7 +239,7 @@ You have access to their complete profile:
 - Favorite Franchises: {', '.join(user_profile['preferences']['favorite_franchises']) or 'None set'}
 - Preferred Language: {user_profile['preferences']['preferred_language'] or 'No preference'}
 - Watch History: {len(user_profile['watch_history'])} movies watched
-- Recent movies: {', '.join(m['title'] + (f" (rated {m['user_rating']}/5)" if m['user_rating'] else '') for m in user_profile['watch_history'][:10]) or 'None yet'}
+- Recent movies: {', '.join(m['title'] + (f" (rated {m['user_rating']}/10)" if m['user_rating'] else '') for m in user_profile['watch_history'][:10]) or 'None yet'}
 
 Movie details for "{movie['title']}":
 - Genres: {movie['genres']}
@@ -247,7 +247,7 @@ Movie details for "{movie['title']}":
 - Language: {movie['language']}, Country: {movie['country']}
 - Age Rating: {movie['age_rating']}, Runtime: {movie['runtime']} min
 - Release Year: {movie['release_year']}
-- Average Rating: {movie['average_rating']}/5
+- Average Rating: {movie['average_rating']}/10
 - Franchise: {movie['franchise'] or 'Standalone'}
 
 Keep responses concise (2-4 sentences), friendly, and personalized to their taste. You can discuss the movie's plot, themes, similar movies they've watched, or anything else they ask. Do NOT use markdown formatting — respond in plain text."""

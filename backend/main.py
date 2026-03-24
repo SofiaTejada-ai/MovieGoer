@@ -948,7 +948,7 @@ def get_user_recommendations(user_id: int):
             JOIN movies m ON wh.movie_id = m.movie_id
             LEFT JOIN ratings r ON wh.user_id = r.user_id AND wh.movie_id = r.movie_id
             WHERE wh.user_id = %s
-            ORDER BY COALESCE(r.score, 3) DESC, wh.watched_date DESC
+            ORDER BY COALESCE(r.score, 5) DESC, wh.watched_date DESC
         """, (user_id,))
         
         watch_history = cursor.fetchall()
