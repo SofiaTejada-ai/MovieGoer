@@ -100,14 +100,14 @@ def fetch_user_profile(user_id: int) -> dict:
 
 
 def fetch_movie_details(movie_id: int) -> dict:
-    """Fetch full movie details including genres and franchise info."""
+    """Fetch full movie details including genres, franchise info, and audience reception."""
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT m.movie_id, m.title, m.original_title, m.overview, m.runtime,
                m.language, m.country, m.age_rating, m.average_rating,
-               m.popularity_score, m.release_year,
+               m.popularity_score, m.release_year, m.audience_reception,
                (SELECT STRING_AGG(g.genre_name, ', ')
                 FROM movie_genres mg
                 JOIN genres g ON mg.genre_id = g.genre_id
@@ -143,6 +143,7 @@ def fetch_movie_details(movie_id: int) -> dict:
         "release_year": movie["release_year"],
         "average_rating": float(movie["average_rating"]) if movie["average_rating"] else None,
         "popularity_score": float(movie["popularity_score"]) if movie["popularity_score"] else None,
+        "audience_reception": movie["audience_reception"],
         "franchise": franchise_row["media_franchise"] if franchise_row else None,
         "sequel_franchise": franchise_row["sequel_franchise"] if franchise_row else None
     }
@@ -158,7 +159,7 @@ def predict_movie_preference(user_id: int, movie_id: int) -> dict:
     if not movie:
         return {"error": "Movie not found"}
 
-    prompt = f"""You are MovieGoer AI, a movie recommendation expert. Analyze this user's complete viewing profile and predict whether they would enjoy the target movie.
+    prompt = f"""You are MovieGoer AI, a movie recommendation expert with deep knowledge of film criticism and audience reception. Analyze this user's complete viewing profile and predict whether they would enjoy the target movie.
 
 USER PROFILE:
 - Username: {user_profile['username']}
@@ -175,6 +176,25 @@ WATCH HISTORY ({len(user_profile['watch_history'])} movies):
 TARGET MOVIE:
 {json.dumps(movie, indent=2)}
 
+AUDIENCE RECEPTION ANALYSIS:
+The movie has an audience reception of "{movie.get('audience_reception', 'unknown')}". Consider this carefully:
+
+- If "critically acclaimed": This means the movie received widespread praise from critics and audiences, typically high ratings (80%+ on Rotten Tomatoes), strong word-of-mouth, and often award recognition. These films are usually considered high-quality, well-crafted, and have broad appeal.
+
+- If "mixed": This means the movie received divided opinions - some praise and some criticism. It might have good elements but also notable flaws. These films appeal to specific audiences but may not have universal appeal.
+
+- If "controversial": This means the movie was polarizing - strongly loved by some and strongly disliked by others. It often pushes boundaries, has divisive themes, or experimental elements that split audiences.
+
+IMPORTANT: Explain WHY this movie received its reception based on your knowledge of film history, critical consensus, and cultural context. Consider factors like:
+- Direction quality and filmmaking techniques
+- Script quality and storytelling
+- Performances and character development
+- Genre conventions and innovation
+- Cultural impact and relevance
+- Awards and accolades
+- Box office performance vs. critical reception
+- Controversies or debates surrounding the film
+
 Based on:
 1. How well the movie's genres align with the user's favorite genres
 2. Franchise loyalty (does the user follow this franchise?)
@@ -183,13 +203,14 @@ Based on:
 5. Runtime preferences
 6. Patterns in their watch history and ratings (what they rated high vs low)
 7. The movie's overall quality (average rating, popularity)
+8. **CRUCIALLY**: The audience reception and WHY it received that reception, and whether this aligns with the user's demonstrated tastes
 
 Respond ONLY with valid JSON (no markdown, no code fences):
 {{
     "prediction": "YES or MAYBE or NO",
     "confidence": 1-10,
     "match_percentage": 0-100,
-    "reasoning": "2-3 sentence explanation of why",
+    "reasoning": "2-3 sentence explanation of why, including audience reception analysis",
     "pros": ["reason they might like it", "another reason"],
     "cons": ["potential concern", "another concern"]
 }}"""
@@ -232,7 +253,7 @@ def chat_about_movie(user_id: int, movie_id: int, message: str) -> dict:
         if not user_profile or not movie:
             return {"error": "User or movie not found"}
 
-        system_prompt = f"""You are MovieGoer AI, a friendly and knowledgeable movie expert. You are chatting with {user_profile['username']} about the movie "{movie['title']}".
+        system_prompt = f"""You are MovieGoer AI, a friendly and knowledgeable movie expert with deep knowledge of film criticism and audience reception. You are chatting with {user_profile['username']} about the movie "{movie['title']}".
 
 You have access to their complete profile:
 - Favorite Genres: {', '.join(user_profile['preferences']['favorite_genres']) or 'None set'}
@@ -248,9 +269,12 @@ Movie details for "{movie['title']}":
 - Age Rating: {movie['age_rating']}, Runtime: {movie['runtime']} min
 - Release Year: {movie['release_year']}
 - Average Rating: {movie['average_rating']}/10
+- Audience Reception: {movie.get('audience_reception', 'unknown')}
 - Franchise: {movie['franchise'] or 'Standalone'}
 
-Keep responses concise (2-4 sentences), friendly, and personalized to their taste. You can discuss the movie's plot, themes, similar movies they've watched, or anything else they ask. Do NOT use markdown formatting — respond in plain text."""
+IMPORTANT: When discussing audience reception, explain WHY the movie received that reception based on your knowledge of film history, critical consensus, and cultural context. Consider factors like direction quality, script, performances, innovation, cultural impact, awards, and controversies.
+
+Keep responses concise (2-4 sentences), friendly, and personalized to their taste. You can discuss the movie's plot, themes, similar movies they've watched, audience reception, or anything else they ask. Do NOT use markdown formatting — respond in plain text."""
 
         model = genai.GenerativeModel("gemini-2.0-flash")
         chat = model.start_chat(history=[

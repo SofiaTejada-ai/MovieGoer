@@ -171,6 +171,7 @@ class MovieOut(BaseModel):
     Poster_Url: Optional[str] = None
     Release_Year: int
     Genres: Optional[str] = None
+    Audience_Reception: Optional[str] = None
     StreamingServices: Optional[List[dict]] = []
 
 class WatchHistoryIn(BaseModel):
@@ -498,7 +499,7 @@ def get_movies():
         cursor.execute("""
             SELECT m.movie_id, m.title, m.original_title, m.overview, m.runtime, m.language,
                    m.country, m.age_rating, m.average_rating, m.popularity_score,
-                   m.poster_url, m.release_year,
+                   m.poster_url, m.release_year, m.audience_reception,
                    (SELECT STRING_AGG(g.genre_name, ', ')
                     FROM movie_genres mg
                     JOIN genres g ON mg.genre_id = g.genre_id
@@ -521,7 +522,8 @@ def get_movies():
                 "Popularity_Score": float(row["popularity_score"]) if row["popularity_score"] is not None else None,
                 "Poster_Url": row["poster_url"],
                 "Release_Year": row["release_year"],
-                "Genres": row["genres"] if row["genres"] else ""
+                "Genres": row["genres"] if row["genres"] else "",
+                "Audience_Reception": row["audience_reception"]
             }
             for row in rows
         ]
@@ -562,7 +564,7 @@ def get_movie(movie_id: int):
         cursor.execute("""
             SELECT m.movie_id, m.title, m.original_title, m.overview, m.runtime, m.language,
                    m.country, m.age_rating, m.average_rating, m.popularity_score,
-                   m.poster_url, m.release_year,
+                   m.poster_url, m.release_year, m.audience_reception,
                    STRING_AGG(g.genre_name, ', ') as genres
             FROM movies m
             LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
@@ -570,7 +572,7 @@ def get_movie(movie_id: int):
             WHERE m.movie_id = %s
             GROUP BY m.movie_id, m.title, m.original_title, m.overview, m.runtime, m.language,
                      m.country, m.age_rating, m.average_rating, m.popularity_score,
-                     m.poster_url, m.release_year
+                     m.poster_url, m.release_year, m.audience_reception
         """, (movie_id,))
         row = cursor.fetchone()
         
@@ -614,6 +616,7 @@ def get_movie(movie_id: int):
             "Poster_Url": row["poster_url"],
             "Release_Year": row["release_year"],
             "Genres": row["genres"] if row["genres"] else "",
+            "Audience_Reception": row["audience_reception"],
             "StreamingServices": streaming_services
         }
         
