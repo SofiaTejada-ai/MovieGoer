@@ -42,8 +42,8 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-# Database connection - uses DATABASE_URL from Railway
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# Database connection - prefer private URL to avoid egress fees
+DATABASE_URL = os.environ.get("DATABASE_PRIVATE_URL") or os.environ.get("DATABASE_URL", "")
 
 def get_connection():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
