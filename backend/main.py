@@ -1309,6 +1309,66 @@ def get_user_recommendations(user_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
+# DELETE ALL USER DATA ENDPOINT
+# ============================================
+
+@app.delete("/users/{user_id}/data")
+def delete_all_user_data(user_id: int):
+    """Permanently delete all user data: preferences, watch history, and ratings"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Delete user preferences
+        cursor.execute("""
+            DELETE FROM user_preferences
+            WHERE user_id = %s
+        """, (user_id,))
+        
+        # Delete watch history
+        cursor.execute("""
+            DELETE FROM watch_history
+            WHERE user_id = %s
+        """, (user_id,))
+        
+        # Delete ratings
+        cursor.execute("""
+            DELETE FROM ratings
+            WHERE user_id = %s
+        """, (user_id,))
+        
+        # Verify deletion by counting remaining records
+        cursor.execute("""
+            SELECT 
+                (SELECT COUNT(*) FROM user_preferences WHERE user_id = %s) as pref_count,
+                (SELECT COUNT(*) FROM watch_history WHERE user_id = %s) as hist_count,
+                (SELECT COUNT(*) FROM ratings WHERE user_id = %s) as rating_count
+        """, (user_id, user_id, user_id))
+        
+        counts = cursor.fetchone()
+        
+        conn.commit()
+        conn.close()
+        
+        # Double-check that all data was deleted
+        if counts["pref_count"] > 0 or counts["hist_count"] > 0 or counts["rating_count"] > 0:
+            raise HTTPException(status_code=500, detail="Failed to delete all user data")
+        
+        return {
+            "message": "All user data permanently deleted",
+            "deleted_items": {
+                "preferences": True,
+                "watch_history": True,
+                "ratings": True
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
 # AI PREDICTION ENDPOINTS (Gemini)
 # ============================================
 
