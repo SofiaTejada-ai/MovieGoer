@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -16,7 +19,7 @@ import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from model import recommender  # Load recommender model on startup - updated with international movies rating system
-from llm_predictor import predict_movie_preference, chat_about_movie, clear_chat_session
+from llm_predictor import predict_movie_preference, chat_about_movie, clear_chat_session, predict_movie_preference_demo
 
 # JWT Configuration
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "moviegoer-secret-key-change-in-production")
@@ -214,6 +217,38 @@ class ForgotPasswordIn(BaseModel):
 class ResetPasswordIn(BaseModel):
     Token: str
     NewPassword: str
+
+class DemoAIPreferences(BaseModel):
+    favoriteGenres: List[str] = []
+    favoriteFranchises: List[str] = []
+    preferredLanguage: Optional[str] = None
+    preferredCountry: Optional[str] = None
+    preferredAgeRating: Optional[str] = None
+    preferredRuntime: Optional[dict] = None
+    watchHistory: List[int] = []
+    ratings: dict = {}
+
+class DemoAIPredictRequest(BaseModel):
+    demoUserId: str
+    movieId: int
+    preferences: DemoAIPreferences
+
+class DemoPreferences(BaseModel):
+    favoriteGenres: List[str] = []
+    favoriteFranchises: List[str] = []
+    likedMovies: List[int] = []
+    dislikedMovies: List[int] = []
+    watchHistory: List[int] = []
+    ratings: dict = {}
+    preferredLanguage: Optional[str] = None
+    preferredCountry: Optional[str] = None
+    preferredRuntime: Optional[dict] = None   # { min, max } or null
+    preferredAgeRating: Optional[str] = None
+
+class DemoRecommendationRequest(BaseModel):
+    mode: str = "demo"
+    demoUserId: str
+    preferences: DemoPreferences
 
 # Password reset token configuration
 password_reset_serializer = URLSafeTimedSerializer(SECRET_KEY)
@@ -1312,6 +1347,180 @@ def get_user_recommendations(user_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
+# DEMO RECOMMENDATIONS ENDPOINT
+# No database writes — preferences come from the frontend localStorage payload.
+# ============================================
+
+@app.post("/recommendations/demo")
+def get_demo_recommendations(body: DemoRecommendationRequest):
+    """
+    Generate recommendations for a demo (non-authenticated) user.
+    Preferences are passed in from the browser's localStorage; nothing is read
+    from or written to the database.
+    """
+    try:
+        prefs = body.preferences
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Resolve genre names → IDs
+        genre_ids = []
+        if prefs.favoriteGenres:
+            genre_placeholders = ",".join(["%s"] * len(prefs.favoriteGenres))
+            cursor.execute(
+                f"SELECT genre_id, genre_name FROM genres WHERE genre_name IN ({genre_placeholders})",
+                prefs.favoriteGenres,
+            )
+            genre_rows = cursor.fetchall()
+            genre_ids = [row["genre_id"] for row in genre_rows]
+
+        seen_ids = set(prefs.watchHistory or [])
+        final_recommendations = []
+
+        # ── Step 1: Franchise matches ────────────────────────────────────────
+        if prefs.favoriteFranchises:
+            fran_ph = ",".join(["%s"] * len(prefs.favoriteFranchises))
+            fran_query = f"""
+                SELECT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                       m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                       (SELECT STRING_AGG(g2.genre_name, ', ')
+                        FROM movie_genres mg2
+                        JOIN genres g2 ON mg2.genre_id = g2.genre_id
+                        WHERE mg2.movie_id = m.movie_id) as genres,
+                       f.media_franchise
+                FROM movies m
+                JOIN franchises f ON m.movie_id = f.movie_id
+                WHERE f.media_franchise IN ({fran_ph})
+                ORDER BY m.popularity_score DESC, m.average_rating DESC
+                LIMIT 15
+            """
+            cursor.execute(fran_query, prefs.favoriteFranchises)
+            for row in cursor.fetchall():
+                if row["movie_id"] not in seen_ids:
+                    seen_ids.add(row["movie_id"])
+                    final_recommendations.append({
+                        "Movie_id": row["movie_id"],
+                        "Title": row["title"],
+                        "Poster_Url": row["poster_url"],
+                        "Release_Year": row["release_year"],
+                        "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                        "Genres": row["genres"] or "",
+                        "Genre_Name": row["genres"] or "",
+                        "Language": row["language"] or "",
+                        "Country": row["country"] or "",
+                        "Age_Rating": row["age_rating"] or "",
+                        "Similarity_Score": 0.90,
+                        "recommendation_type": f"Franchise: {row['media_franchise']}",
+                    })
+
+        # ── Step 2: Genre + filter matches ───────────────────────────────────
+        remaining = 10 - len(final_recommendations)
+        if remaining > 0 and genre_ids:
+            where_clauses = ["mg.genre_id = ANY(%s)"]
+            params = [genre_ids]
+
+            if prefs.preferredLanguage:
+                where_clauses.append("m.language = %s")
+                params.append(prefs.preferredLanguage)
+
+            if prefs.preferredAgeRating:
+                age_order = ["G", "PG", "PG-13", "R"]
+                max_idx = age_order.index(prefs.preferredAgeRating) if prefs.preferredAgeRating in age_order else len(age_order) - 1
+                allowed = age_order[: max_idx + 1]
+                age_ph = ",".join(["%s"] * len(allowed))
+                where_clauses.append(f"m.age_rating IN ({age_ph})")
+                params.extend(allowed)
+
+            if prefs.preferredRuntime and isinstance(prefs.preferredRuntime, dict):
+                rt_min = prefs.preferredRuntime.get("min")
+                rt_max = prefs.preferredRuntime.get("max")
+                if rt_min is not None:
+                    where_clauses.append("m.runtime >= %s")
+                    params.append(rt_min)
+                if rt_max is not None and rt_max < 999:
+                    where_clauses.append("m.runtime <= %s")
+                    params.append(rt_max)
+
+            if seen_ids:
+                excl_ph = ",".join(["%s"] * len(seen_ids))
+                where_clauses.append(f"m.movie_id NOT IN ({excl_ph})")
+                params.extend(list(seen_ids))
+
+            where_str = " AND ".join(where_clauses)
+            cursor.execute(f"""
+                SELECT DISTINCT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                       m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                       (SELECT STRING_AGG(g2.genre_name, ', ')
+                        FROM movie_genres mg2
+                        JOIN genres g2 ON mg2.genre_id = g2.genre_id
+                        WHERE mg2.movie_id = m.movie_id) as genres
+                FROM movies m
+                LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
+                WHERE {where_str}
+                ORDER BY m.popularity_score DESC, m.average_rating DESC
+                LIMIT %s
+            """, params + [remaining + 5])
+
+            for row in cursor.fetchall():
+                if row["movie_id"] not in seen_ids and len(final_recommendations) < 10:
+                    seen_ids.add(row["movie_id"])
+                    final_recommendations.append({
+                        "Movie_id": row["movie_id"],
+                        "Title": row["title"],
+                        "Poster_Url": row["poster_url"],
+                        "Release_Year": row["release_year"],
+                        "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                        "Genres": row["genres"] or "",
+                        "Genre_Name": row["genres"] or "",
+                        "Language": row["language"] or "",
+                        "Country": row["country"] or "",
+                        "Age_Rating": row["age_rating"] or "",
+                        "Similarity_Score": 0.75,
+                        "recommendation_type": "Your Preferences",
+                    })
+
+        # ── Step 3: Fallback — popular movies if nothing matched ─────────────
+        if not final_recommendations:
+            cursor.execute("""
+                SELECT m.movie_id, m.title, m.language, m.country, m.age_rating,
+                       m.poster_url, m.release_year, m.average_rating, m.popularity_score,
+                       STRING_AGG(g.genre_name, ', ') as genres
+                FROM movies m
+                LEFT JOIN movie_genres mg ON m.movie_id = mg.movie_id
+                LEFT JOIN genres g ON mg.genre_id = g.genre_id
+                GROUP BY m.movie_id, m.title, m.language, m.country, m.age_rating,
+                         m.poster_url, m.release_year, m.average_rating, m.popularity_score
+                ORDER BY m.popularity_score DESC, m.average_rating DESC
+                LIMIT 10
+            """)
+            for row in cursor.fetchall():
+                final_recommendations.append({
+                    "Movie_id": row["movie_id"],
+                    "Title": row["title"],
+                    "Poster_Url": row["poster_url"],
+                    "Release_Year": row["release_year"],
+                    "Average_Rating": float(row["average_rating"]) if row["average_rating"] else None,
+                    "Genres": row["genres"] or "",
+                    "Genre_Name": row["genres"] or "",
+                    "Language": row["language"] or "",
+                    "Country": row["country"] or "",
+                    "Age_Rating": row["age_rating"] or "",
+                    "Similarity_Score": 0.5,
+                    "recommendation_type": "Popular Movies",
+                })
+
+        conn.close()
+        return {
+            "demoUserId": body.demoUserId,
+            "recommendation_type": "demo_preference_based",
+            "recommendations": final_recommendations[:10],
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
 # DELETE ALL USER DATA ENDPOINT
 # ============================================
 
@@ -1406,3 +1615,23 @@ def ai_clear_chat(user_id: int, movie_id: int):
     """Clear a chat session when the user leaves the movie page."""
     clear_chat_session(user_id, movie_id)
     return {"message": "Chat session cleared"}
+
+@app.post("/ai/demo-predict")
+def ai_demo_predict(body: DemoAIPredictRequest):
+    """
+    Gemini AI prediction for a demo (non-authenticated) user.
+    Preferences come from the browser's localStorage — no DB user lookup.
+    """
+    try:
+        demo_profile = {
+            "demoUserId": body.demoUserId,
+            "preferences": body.preferences.dict(),
+        }
+        result = predict_movie_preference_demo(demo_profile, body.movieId)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

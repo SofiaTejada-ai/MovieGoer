@@ -297,3 +297,95 @@ def clear_chat_session(user_id: int, movie_id: int):
     """Clear a chat session when the user leaves the movie page."""
     session_key = f"{user_id}:{movie_id}"
     _chat_sessions.pop(session_key, None)
+
+
+def predict_movie_preference_demo(demo_profile: dict, movie_id: int) -> dict:
+    """
+    Predict whether a demo (non-authenticated) user would enjoy a movie.
+    Preferences come from the browser's localStorage — no DB user lookup needed.
+    Only the movie details are fetched from the database.
+    """
+    movie = fetch_movie_details(movie_id)
+    if not movie:
+        return {"error": "Movie not found"}
+
+    prefs = demo_profile.get("preferences", {})
+    watch_history_ids = prefs.get("watchHistory", [])
+    ratings = prefs.get("ratings", {})
+
+    # Build a human-readable watch history summary (IDs only, no titles available)
+    history_summary = []
+    for mid in watch_history_ids[:10]:
+        rating = ratings.get(str(mid))
+        entry = f"Movie ID {mid}"
+        if rating:
+            entry += f" (rated {rating}/10)"
+        history_summary.append(entry)
+
+    runtime_pref = prefs.get("preferredRuntime")
+    runtime_str = (
+        f"{runtime_pref.get('min', 0)}–{runtime_pref.get('max', '∞')} min"
+        if runtime_pref else "No preference"
+    )
+
+    prompt = f"""You are MovieGoer AI, a movie recommendation expert with deep knowledge of film criticism. Analyze this user's taste profile and predict whether they would enjoy the target movie.
+
+USER PROFILE (Demo User):
+- Favorite Genres: {', '.join(prefs.get('favoriteGenres', [])) or 'None set'}
+- Favorite Franchises: {', '.join(prefs.get('favoriteFranchises', [])) or 'None set'}
+- Preferred Language: {prefs.get('preferredLanguage') or 'No preference'}
+- Preferred Country: {prefs.get('preferredCountry') or 'No preference'}
+- Preferred Age Rating: {prefs.get('preferredAgeRating') or 'No preference'}
+- Runtime Preference: {runtime_str}
+- Movies Watched: {len(watch_history_ids)} total
+- Recent Watches: {', '.join(history_summary) if history_summary else 'None yet'}
+
+TARGET MOVIE:
+{json.dumps(movie, indent=2)}
+
+AUDIENCE RECEPTION ANALYSIS:
+The movie has an audience reception of "{movie.get('audience_reception', 'unknown')}". Consider this carefully:
+- "critically acclaimed": widespread praise, high quality, broad appeal
+- "mixed": divided opinions, appeal to specific audiences
+- "controversial": polarizing, pushes boundaries, splits audiences
+
+Based on:
+1. How well the movie's genres align with the user's favorite genres
+2. Franchise loyalty
+3. Language and country preferences
+4. Age rating comfort zone
+5. Runtime preferences
+6. The movie's overall quality (average rating, popularity)
+7. The audience reception and why it received that reception
+
+Respond ONLY with valid JSON (no markdown, no code fences):
+{{
+    "prediction": "YES or MAYBE or NO",
+    "confidence": 1-10,
+    "match_percentage": 0-100,
+    "reasoning": "2-3 sentence explanation including audience reception analysis",
+    "pros": ["reason they might like it", "another reason"],
+    "cons": ["potential concern", "another concern"]
+}}"""
+
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    response = model.generate_content(prompt)
+
+    try:
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        result = json.loads(text)
+    except (json.JSONDecodeError, Exception):
+        result = {
+            "prediction": "MAYBE",
+            "confidence": 5,
+            "match_percentage": 50,
+            "reasoning": response.text.strip(),
+            "pros": [],
+            "cons": [],
+        }
+
+    result["movie_title"] = movie["title"]
+    result["demo_user"] = True
+    return result
