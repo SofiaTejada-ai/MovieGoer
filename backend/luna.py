@@ -19,7 +19,24 @@ DATABASE_URL = os.environ.get("DATABASE_PRIVATE_URL") or os.environ.get("DATABAS
 genai.configure(api_key=gemini_key)
 pc = Pinecone(api_key=pinecone_key)
 movie_index = pc.Index("movie-overviews")
-memory_index = pc.Index("luna-memory")
+
+# Try to get memory index, create if doesn't exist
+try:
+    existing_indexes = [idx.name for idx in pc.list_indexes()]
+    if "luna-memory" not in existing_indexes:
+        from pinecone import ServerlessSpec
+        pc.create_index(
+            name="luna-memory",
+            dimension=3072,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1")
+        )
+        import time
+        time.sleep(5)
+    memory_index = pc.Index("luna-memory")
+except Exception as e:
+    print(f"Warning: Could not initialize luna-memory index: {e}")
+    memory_index = None
 
 openai_client = OpenAI(api_key=openai_key)
 
@@ -115,6 +132,8 @@ def save_chat_to_db(user_id, session_id, role, message, movie_ids=None):
     return chat_id
 
 def save_chat_to_memory(user_id, session_id, role, message):
+    if not memory_index:
+        return
     embedding = create_embedding(message)
     memory_id = f"{user_id}-{session_id}-{uuid.uuid4().hex[:8]}"
     memory_index.upsert(vectors=[{
@@ -130,6 +149,8 @@ def save_chat_to_memory(user_id, session_id, role, message):
     }])
 
 def get_relevant_memories(user_id, query, top_k=5):
+    if not memory_index:
+        return []
     query_embedding = create_embedding(query)
     results = memory_index.query(
         vector=query_embedding,
