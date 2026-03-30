@@ -17,28 +17,33 @@ openai_key = os.getenv("OPEN_AI_EMBEDDINGS_KEY")
 DATABASE_URL = os.environ.get("DATABASE_PRIVATE_URL") or os.environ.get("DATABASE_PUBLIC_URL", "")
 
 genai.configure(api_key=gemini_key)
-pc = Pinecone(api_key=pinecone_key)
-movie_index = pc.Index("movie-overviews")
 
-# Try to get memory index, create if doesn't exist
-try:
-    existing_indexes = [idx.name for idx in pc.list_indexes()]
-    if "luna-memory" not in existing_indexes:
-        from pinecone import ServerlessSpec
-        pc.create_index(
-            name="luna-memory",
-            dimension=3072,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1")
-        )
-        import time
-        time.sleep(5)
-    memory_index = pc.Index("luna-memory")
-except Exception as e:
-    print(f"Warning: Could not initialize luna-memory index: {e}")
-    memory_index = None
+# Initialize Pinecone lazily to avoid startup crashes
+pc = None
+movie_index = None
+memory_index = None
+openai_client = None
 
-openai_client = OpenAI(api_key=openai_key)
+def init_pinecone():
+    global pc, movie_index, memory_index, openai_client
+    if pc is not None:
+        return True
+    try:
+        pc = Pinecone(api_key=pinecone_key.strip() if pinecone_key else "")
+        movie_index = pc.Index("movie-overviews")
+        openai_client = OpenAI(api_key=openai_key.strip() if openai_key else "")
+        
+        # Try to get memory index
+        try:
+            existing_indexes = [idx.name for idx in pc.list_indexes()]
+            if "luna-memory" in existing_indexes:
+                memory_index = pc.Index("luna-memory")
+        except:
+            memory_index = None
+        return True
+    except Exception as e:
+        print(f"Warning: Could not initialize Pinecone: {e}")
+        return False
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -217,6 +222,12 @@ def get_user_sessions(user_id, limit=10):
 demo_conversations = {}
 
 def ask_luna(query: str, user_id: int = None, is_demo: bool = False, session_id: str = None):
+    if not init_pinecone():
+        return {
+            "message": "Luna is currently unavailable. Please try again later!",
+            "movies": [],
+            "session_id": session_id or uuid.uuid4().hex
+        }
     print(f"[Luna] user_id={user_id}, is_demo={is_demo}, session_id={session_id}, query={query[:50]}...")
     
     if not session_id:
