@@ -215,6 +215,18 @@ def get_chat_history(user_id, session_id=None, limit=20):
     conn.close()
     return [dict(h) for h in history]
 
+def delete_chat_session(user_id, session_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        DELETE FROM luna_chats
+        WHERE user_id = %s AND session_id = %s
+    """, (user_id, session_id))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
 def get_user_sessions(user_id, limit=10):
     conn = get_connection()
     cursor = conn.cursor()

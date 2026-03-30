@@ -20,7 +20,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from model import recommender  # Load recommender model on startup - updated with international movies rating system
 from llm_predictor import predict_movie_preference, chat_about_movie, clear_chat_session, predict_movie_preference_demo
-from luna import ask_luna as luna_ask, get_user_sessions, get_chat_history
+from luna import ask_luna as luna_ask, get_user_sessions, get_chat_history, delete_chat_session
 
 # JWT Configuration
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "moviegoer-secret-key-change-in-production")
@@ -1670,5 +1670,14 @@ def get_luna_history(user_id: int, session_id: str):
     try:
         history = get_chat_history(user_id, session_id)
         return {"history": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/luna/session/{user_id}/{session_id}")
+def delete_luna_session(user_id: int, session_id: str):
+    """Delete a Luna chat session."""
+    try:
+        deleted = delete_chat_session(user_id, session_id)
+        return {"deleted": deleted, "success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
