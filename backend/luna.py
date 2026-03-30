@@ -28,27 +28,41 @@ def init_pinecone():
     global pc, movie_index, memory_index, openai_client
     if pc is not None:
         return True
+    
+    print(f"[Luna Init] PINECONE_API_KEY exists: {bool(pinecone_key)}")
+    print(f"[Luna Init] OPEN_AI_EMBEDDINGS_KEY exists: {bool(openai_key)}")
+    
+    if not pinecone_key or not openai_key:
+        print("[Luna Init] Missing API keys!")
+        return False
+    
     try:
-        pc = Pinecone(api_key=pinecone_key.strip() if pinecone_key else "")
+        pc = Pinecone(api_key=pinecone_key.strip())
+        print("[Luna Init] Pinecone client created")
         movie_index = pc.Index("movie-overviews")
-        openai_client = OpenAI(api_key=openai_key.strip() if openai_key else "")
+        print("[Luna Init] Movie index connected")
+        openai_client = OpenAI(api_key=openai_key.strip())
+        print("[Luna Init] OpenAI client created")
         
         # Try to get memory index
         try:
             existing_indexes = [idx.name for idx in pc.list_indexes()]
             if "luna-memory" in existing_indexes:
                 memory_index = pc.Index("luna-memory")
+                print("[Luna Init] Memory index connected")
         except:
             memory_index = None
         return True
     except Exception as e:
-        print(f"Warning: Could not initialize Pinecone: {e}")
+        print(f"[Luna Init] ERROR: {e}")
         return False
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def create_embedding(text):
+    if not openai_client:
+        raise Exception("OpenAI client not initialized")
     response = openai_client.embeddings.create(
         model="text-embedding-3-large",
         input=text
@@ -56,6 +70,8 @@ def create_embedding(text):
     return response.data[0].embedding
 
 def search_similar_movies(query, top_k=10):
+    if not movie_index:
+        raise Exception("Movie index not initialized")
     query_embedding = create_embedding(query)
     results = movie_index.query(
         vector=query_embedding,
