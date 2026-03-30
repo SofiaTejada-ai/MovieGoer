@@ -238,82 +238,83 @@ def get_user_sessions(user_id, limit=10):
 demo_conversations = {}
 
 def ask_luna(query: str, user_id: int = None, is_demo: bool = False, session_id: str = None):
-    if not init_pinecone():
-        return {
-            "message": "Luna is currently unavailable. Please try again later!",
-            "movies": [],
-            "session_id": session_id or uuid.uuid4().hex
-        }
-    print(f"[Luna] user_id={user_id}, is_demo={is_demo}, session_id={session_id}, query={query[:50]}...")
+    try:
+        if not init_pinecone():
+            return {
+                "message": "Luna is currently unavailable. Please try again later!",
+                "movies": [],
+                "session_id": session_id or uuid.uuid4().hex
+            }
+        print(f"[Luna] user_id={user_id}, is_demo={is_demo}, session_id={session_id}, query={query[:50]}...")
     
-    if not session_id:
-        session_id = uuid.uuid4().hex
-        print(f"[Luna] Generated new session_id: {session_id}")
+        if not session_id:
+            session_id = uuid.uuid4().hex
+            print(f"[Luna] Generated new session_id: {session_id}")
     
-    current_history = []
+        current_history = []
     
-    if user_id and session_id:
-        current_history = get_chat_history(user_id, session_id, limit=10)
-        print(f"[Luna] Fetched {len(current_history)} messages from DB")
-        save_chat_to_db(user_id, session_id, 'user', query)
-        save_chat_to_memory(user_id, session_id, 'user', query)
-    elif is_demo:
-        if session_id not in demo_conversations:
-            demo_conversations[session_id] = []
-        current_history = demo_conversations[session_id][-10:]
-        print(f"[Luna] Demo mode - {len(current_history)} messages in memory")
-        demo_conversations[session_id].append({'role': 'user', 'message': query})
+        if user_id and session_id:
+            current_history = get_chat_history(user_id, session_id, limit=10)
+            print(f"[Luna] Fetched {len(current_history)} messages from DB")
+            save_chat_to_db(user_id, session_id, 'user', query)
+            save_chat_to_memory(user_id, session_id, 'user', query)
+        elif is_demo:
+            if session_id not in demo_conversations:
+                demo_conversations[session_id] = []
+            current_history = demo_conversations[session_id][-10:]
+            print(f"[Luna] Demo mode - {len(current_history)} messages in memory")
+            demo_conversations[session_id].append({'role': 'user', 'message': query})
     
-    similar_movies = search_similar_movies(query, top_k=10)
+        similar_movies = search_similar_movies(query, top_k=10)
     
-    if not similar_movies:
-        response_msg = "I couldn't find any movies matching your request. Try describing what kind of movie you're looking for!"
+        if not similar_movies:
+            response_msg = "I couldn't find any movies matching your request. Try describing what kind of movie you're looking for!"
+            if user_id:
+                save_chat_to_db(user_id, session_id, 'luna', response_msg)
+            return {
+                "message": response_msg,
+                "movies": [],
+                "session_id": session_id
+            }
+    
+        movie_ids = [int(match.id) for match in similar_movies]
+        movie_details = get_movie_details(movie_ids)
+    
+        user_prefs = get_user_preferences(user_id) if user_id else None
+        preferences_context = ""
+        if user_prefs:
+            preferences_context = "\n\nUSER'S MOVIE PREFERENCES (from their profile):\n"
+            if user_prefs['genres']:
+                preferences_context += f"- Favorite Genres: {', '.join(user_prefs['genres'])}\n"
+            if user_prefs['franchises']:
+                preferences_context += f"- Favorite Franchises: {', '.join(user_prefs['franchises'])}\n"
+            if user_prefs['language']:
+                preferences_context += f"- Preferred Language: {user_prefs['language']}\n"
+            if user_prefs['age_rating']:
+                preferences_context += f"- Age Rating Preference: {user_prefs['age_rating']}\n"
+            if user_prefs['min_runtime'] or user_prefs['max_runtime']:
+                rt = f"{user_prefs['min_runtime'] or 0}-{user_prefs['max_runtime'] or 999} min"
+                preferences_context += f"- Runtime Preference: {rt}\n"
+    
+        conversation_context = ""
+        if current_history:
+            conversation_context = "\n\nCURRENT CONVERSATION HISTORY:\n"
+            for msg in current_history:
+                conversation_context += f"- {msg['role'].upper()}: {msg['message'][:200]}\n"
+    
+        memory_context = ""
         if user_id:
-            save_chat_to_db(user_id, session_id, 'luna', response_msg)
-        return {
-            "message": response_msg,
-            "movies": [],
-            "session_id": session_id
-        }
+            memories = get_relevant_memories(user_id, query, top_k=3)
+            if memories:
+                memory_context = "\n\nRELEVANT PAST CONVERSATIONS (from other sessions):\n"
+                for mem in memories:
+                    memory_context += f"- {mem['role']}: {mem['message']}\n"
     
-    movie_ids = [int(match.id) for match in similar_movies]
-    movie_details = get_movie_details(movie_ids)
+        movie_list = ""
+        for movie in movie_details:
+            movie_list += f"- ID:{movie['movie_id']} | \"{movie['title']}\" ({movie['release_year']}) | {movie['genres'] or 'N/A'} | {movie['overview'][:200]}...\n"
     
-    user_prefs = get_user_preferences(user_id) if user_id else None
-    preferences_context = ""
-    if user_prefs:
-        preferences_context = "\n\nUSER'S MOVIE PREFERENCES (from their profile):\n"
-        if user_prefs['genres']:
-            preferences_context += f"- Favorite Genres: {', '.join(user_prefs['genres'])}\n"
-        if user_prefs['franchises']:
-            preferences_context += f"- Favorite Franchises: {', '.join(user_prefs['franchises'])}\n"
-        if user_prefs['language']:
-            preferences_context += f"- Preferred Language: {user_prefs['language']}\n"
-        if user_prefs['age_rating']:
-            preferences_context += f"- Age Rating Preference: {user_prefs['age_rating']}\n"
-        if user_prefs['min_runtime'] or user_prefs['max_runtime']:
-            rt = f"{user_prefs['min_runtime'] or 0}-{user_prefs['max_runtime'] or 999} min"
-            preferences_context += f"- Runtime Preference: {rt}\n"
-    
-    conversation_context = ""
-    if current_history:
-        conversation_context = "\n\nCURRENT CONVERSATION HISTORY:\n"
-        for msg in current_history:
-            conversation_context += f"- {msg['role'].upper()}: {msg['message'][:200]}\n"
-    
-    memory_context = ""
-    if user_id:
-        memories = get_relevant_memories(user_id, query, top_k=3)
-        if memories:
-            memory_context = "\n\nRELEVANT PAST CONVERSATIONS (from other sessions):\n"
-            for mem in memories:
-                memory_context += f"- {mem['role']}: {mem['message']}\n"
-    
-    movie_list = ""
-    for movie in movie_details:
-        movie_list += f"- ID:{movie['movie_id']} | \"{movie['title']}\" ({movie['release_year']}) | {movie['genres'] or 'N/A'} | {movie['overview'][:200]}...\n"
-    
-    prompt = f"""You are Luna, a friendly movie recommendation AI for MovieGoer.
+        prompt = f"""You are Luna, a friendly movie recommendation AI for MovieGoer.
 {preferences_context}
 {conversation_context}
 {memory_context}
@@ -339,7 +340,6 @@ Return JSON format:
 
 Be warm and use emojis sparingly!"""
 
-    try:
         model = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content(prompt)
         
@@ -369,12 +369,11 @@ Be warm and use emojis sparingly!"""
         }
         
     except Exception as e:
-        print(f"Luna error: {e}")
-        fallback_msg = "I found some great movies for you! Here are my top picks based on what you're looking for:"
-        if user_id:
-            save_chat_to_db(user_id, session_id, 'luna', fallback_msg, movie_ids[:5])
+        print(f"[Luna] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         return {
-            "message": fallback_msg,
-            "movies": movie_details[:5],
-            "session_id": session_id
+            "message": "I had a little stargazing moment! Could you try asking again?",
+            "movies": [],
+            "session_id": session_id or uuid.uuid4().hex
         }
