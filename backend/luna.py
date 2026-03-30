@@ -14,7 +14,8 @@ load_dotenv()
 pinecone_key = os.getenv("PINECONE_API_KEY")
 gemini_key = os.getenv("MOVIE_GOER_API_KEY")
 openai_key = os.getenv("OPEN_AI_EMBEDDINGS_KEY")
-DATABASE_URL = os.environ.get("DATABASE_PRIVATE_URL") or os.environ.get("DATABASE_PUBLIC_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_PRIVATE_URL") or os.environ.get("DATABASE_PUBLIC_URL") or os.environ.get("DATABASE_URL", "")
+print(f"[Luna] DATABASE_URL exists: {bool(DATABASE_URL)}")
 
 genai.configure(api_key=gemini_key)
 
