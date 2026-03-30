@@ -20,6 +20,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from model import recommender  # Load recommender model on startup - updated with international movies rating system
 from llm_predictor import predict_movie_preference, chat_about_movie, clear_chat_session, predict_movie_preference_demo
+from luna import ask_luna as luna_ask, get_user_sessions, get_chat_history
 
 # JWT Configuration
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "moviegoer-secret-key-change-in-production")
@@ -46,7 +47,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 # Database connection - prefer private URL to avoid egress fees
-DATABASE_URL = os.environ.get("DATABASE_PRIVATE_URL") or os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_PRIVATE_URL") or os.environ.get("DATABASE_PUBLIC_URL") or os.environ.get("DATABASE_URL", "")
 
 def get_connection():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -232,6 +233,12 @@ class DemoAIPredictRequest(BaseModel):
     demoUserId: str
     movieId: int
     preferences: DemoAIPreferences
+
+class LunaRequest(BaseModel):
+    query: str
+    userId: Optional[int] = None
+    isDemo: bool = False
+    sessionId: Optional[str] = None
 
 class DemoPreferences(BaseModel):
     favoriteGenres: List[str] = []
@@ -1633,5 +1640,35 @@ def ai_demo_predict(body: DemoAIPredictRequest):
         return result
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/luna/ask")
+def luna_ask_endpoint(body: LunaRequest):
+    """
+    Luna AI - Personalized movie recommendations using semantic search.
+    Uses Pinecone vector database to find similar movies based on overviews.
+    """
+    try:
+        result = luna_ask(body.query, body.userId, body.isDemo, body.sessionId)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/luna/sessions/{user_id}")
+def get_luna_sessions(user_id: int):
+    """Get all Luna chat sessions for a user."""
+    try:
+        sessions = get_user_sessions(user_id)
+        return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/luna/history/{user_id}/{session_id}")
+def get_luna_history(user_id: int, session_id: str):
+    """Get chat history for a specific Luna session."""
+    try:
+        history = get_chat_history(user_id, session_id)
+        return {"history": history}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
