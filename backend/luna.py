@@ -27,7 +27,7 @@ openai_client = None
 
 def init_pinecone():
     global pc, movie_index, memory_index, openai_client
-    if pc is not None:
+    if pc is not None and movie_index is not None:
         return True
     
     print(f"[Luna Init] PINECONE_API_KEY exists: {bool(pinecone_key)}")
@@ -284,6 +284,8 @@ def ask_luna(query: str, user_id: int = None, is_demo: bool = False, session_id:
             response_msg = "I couldn't find any movies matching your request. Try describing what kind of movie you're looking for!"
             if user_id:
                 save_chat_to_db(user_id, session_id, 'luna', response_msg)
+            elif is_demo and session_id and session_id in demo_conversations:
+                demo_conversations[session_id].append({'role': 'luna', 'message': response_msg})
             return {
                 "message": response_msg,
                 "movies": [],
@@ -374,7 +376,9 @@ Be warm and use emojis sparingly!"""
         if user_id:
             save_chat_to_db(user_id, session_id, 'luna', luna_message, selected_ids)
             save_chat_to_memory(user_id, session_id, 'luna', luna_message)
-        
+        elif is_demo and session_id and session_id in demo_conversations:
+            demo_conversations[session_id].append({'role': 'luna', 'message': luna_message})
+
         return {
             "message": luna_message,
             "movies": selected_movies,
