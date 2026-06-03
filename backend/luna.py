@@ -355,7 +355,7 @@ Return JSON format:
 
 Be warm and use emojis sparingly!"""
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-3.5-flash")
         response = model.generate_content(prompt)
         
         response_text = response.text.strip()

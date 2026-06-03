@@ -368,7 +368,7 @@ Respond ONLY with valid JSON (no markdown, no code fences):
     "cons": ["potential concern", "another concern"]
 }}"""
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-3.5-flash")
     response = model.generate_content(prompt)
 
     try:
