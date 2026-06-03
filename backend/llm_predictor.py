@@ -215,7 +215,7 @@ Respond ONLY with valid JSON (no markdown, no code fences):
     "cons": ["potential concern", "another concern"]
 }}"""
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     response = model.generate_content(prompt)
 
     try:
@@ -276,7 +276,7 @@ IMPORTANT: When discussing audience reception, explain WHY the movie received th
 
 Keep responses concise (2-4 sentences), friendly, and personalized to their taste. You can discuss the movie's plot, themes, similar movies they've watched, audience reception, or anything else they ask. Do NOT use markdown formatting — respond in plain text."""
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         chat = model.start_chat(history=[
             {"role": "user", "parts": [system_prompt]},
             {"role": "model", "parts": ["Got it! I'm ready to chat about this movie. What would you like to know?"]}
